@@ -153,156 +153,49 @@ go run ./cmd/server                            # 默认监听 :8080，转发到 
 curl http://127.0.0.1:8080/v1/health
 ```
 
-### 4. 联调家具端"小菲"音频链路
-
-用 `furniture/mock_furniture.py` 扮演"带麦克风的小菲"，用 wav 文件作为虚拟麦克风。脚本内置 KWS 抽象层（M2 默认 AlwaysOn）+ webrtcvad 端点检测，能像真机一样自动断句、一条 WS 多句连说。
+### 4. 家具端测试（单句 / 实时麦克风）
 
 ```powershell
-# 安装家具端运行依赖
+# 安装依赖
 pip install -r furniture/requirements.txt
 
-# 单句：经 server 透传到 ASR，期望打印 asr_partial / asr_final
+# 单句：wav 文件经 server 透传到 ASR
 python furniture/mock_furniture.py `
     --server ws://127.0.0.1:8080/v1/voice `
     --device-id dev1 --token t1 `
-    --wav model\audio_output\<某次运行>\01_把客厅的灯打开.wav
+    --wav some.wav
 
-# 多句连说：脚本把多个 wav 拼成虚拟麦克风流，每句之间塞 1.2s 静音
-# VAD 会自动给每一句发 start/end，同一条 WS 拿到 N 个 asr_final
-python furniture/mock_furniture.py `
-    --server ws://127.0.0.1:8080/v1/voice `
-    --wav a.wav b.wav c.wav --gap-ms 1500
-
-# PTT 模式（整段一次性，兼容老脚本行为）
-python furniture/mock_furniture.py --mode ptt --wav a.wav
-
-# 直连 ASR 分段排障（跳过 server）
-python furniture/mock_furniture.py `
-    --server ws://127.0.0.1:9100/v1/asr/stream --wav a.wav
+# 实时麦克风：对着麦克风说话，VAD 自动断句
+python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice `
+    --device-id dev1 --token t1 --live
 ```
 
-预期看到类似：
+### 5. 运行 Android 客户端
 
-```
-[mock-furniture] ▶ VAD: segment #1 START
-   ↳ asr_partial: 把客厅
-   ↳ asr_partial: 把客厅的灯
-[mock-furniture] ■ VAD: segment #1 END (waiting asr_final…)
-   ↳ asr_final: 把客厅的灯打开  ✅
-[mock-furniture] ▶ VAD: segment #2 START
-   ...
-```
-
-### 5. 运行 Android 客户端 / 家具端
-
-详见 [`client/README.md`](./client/README.md)、[`furniture/README.md`](./furniture/README.md)（开发中）。
+详见 [`client/README.md`](./client/README.md)。
 
 ## 联调测试：四层验证法
 
-家具端 ↔ Server ↔ Model 有多处可能出错（端口、采样率、VAD、透传），一层层往上打就能精准定位。按顺序跑，哪层红了就停在那层。
-
-```
-第 1 层  ASR 进程是否起来        → curl /v1/health
-第 2 层  ASR 整段识别是否正确     → curl -F audio=@xxx.wav /v1/asr/transcribe
-第 3 层  ASR 流式 WS 是否出字     → mock_furniture.py 直连 :9100
-第 4 层  Server↔Model 透传是否通  → mock_furniture.py 走 :8080
-```
-
-### 准备：开 3 个 PowerShell 窗口
-
-**窗口 A — ASR 模型服务**
+按顺序跑，哪层红了就停在那层。
 
 ```powershell
-cd C:\Users\yorukoguan\Desktop\System\model
-python -m uvicorn asr_server.app:app --host 0.0.0.0 --port 9100
-```
-
-等到日志出现 `ASR 流式模型加载完成` 和 `Uvicorn running on http://0.0.0.0:9100`。
-
-**窗口 B — Go Server**
-
-```powershell
-cd C:\Users\yorukoguan\Desktop\System\server
-$env:PORT="8080"
-$env:ASR_WS_URL="ws://127.0.0.1:9100/v1/asr/stream"
-go run ./cmd/server
-```
-
-**窗口 C — 测试客户端**（下面所有命令都在这里跑）
-
-```powershell
-cd C:\Users\yorukoguan\Desktop\System
-pip install -r furniture/requirements.txt     # 首次；建议连带安装 scipy 以获得正确的重采样
-```
-
-### 第 1 层：ASR 健康检查
-
-```powershell
+# 第 1 层  ASR 健康检查
 curl http://127.0.0.1:9100/v1/health
-```
+# 期望：stream_loaded: true
 
-期望 `stream_loaded: true`。挂了 → 看窗口 A，通常是模型没下载：`python model/download_model.py --only asr`。
-
-### 第 2 层：ASR 整段识别（HTTP）
-
-```powershell
-$wav = "model\audio_output\20260509_203301\01_把客厅的灯打开.wav"
+# 第 2 层  ASR 整段识别（HTTP）
+$wav = "some.wav"
 curl.exe -X POST -F "audio=@$wav" http://127.0.0.1:9100/v1/asr/transcribe
+# 期望：{"text":"...","duration_ms":...}
+
+# 第 3 层  直连 ASR 流式 WS（跳过 Server）
+python furniture\mock_furniture.py --server ws://127.0.0.1:9100/v1/asr/stream --wav some.wav
+# 期望：ready → partial → final → eos
+
+# 第 4 层  经 Server 透传（端到端）
+python furniture\mock_furniture.py --server ws://127.0.0.1:8080/v1/voice --device-id dev1 --token t1 --wav some.wav
+# 期望：ready → asr_partial → asr_final → eos
 ```
-
-期望：`{"text":"把客厅的灯打开","duration_ms":...}`。这一层通说明模型本身没问题，往下一层走。
-
-### 第 3 层：直连 ASR 的流式 WS（跳过 Server，只验模型侧）
-
-```powershell
-python furniture\mock_furniture.py --server ws://127.0.0.1:9100/v1/asr/stream --wav model\audio_output\20260509_203301\01_把客厅的灯打开.wav
-```
-
-期望：`ready` → 若干 `partial` → `final: 把客厅的灯打开` → `eos`。这层通了表示**模型流式链路 OK**，再挂就一定在 Go Server。
-
-### 第 4 层：经 Server 透传（端到端）
-
-**单句**：
-
-```powershell
-python furniture\mock_furniture.py --server ws://127.0.0.1:8080/v1/voice --device-id dev1 --token t1 --wav model\audio_output\20260509_203301\01_把客厅的灯打开.wav
-```
-
-期望三端日志：
-
-- 窗口 C：`ready` → `asr_partial` × N → `asr_final` → `eos`
-- 窗口 B：`client connected` → `asr connected asr=ws://127.0.0.1:9100/...` → `session done`
-- 窗口 A：`ws connected` → `segment #1 done: text='把客厅的灯打开'` → `ws closed segments=1`
-
-**多句连说**（验证单 WS 多轮对话 + VAD 自动断句）：
-
-```powershell
-python furniture\mock_furniture.py --server ws://127.0.0.1:8080/v1/voice --wav model\audio_output\20260509_203301\01_把客厅的灯打开.wav model\audio_output\20260509_203301\02_把空调调到26度.wav --gap-ms 1500
-```
-
-关键期望：
-
-- 窗口 C 收到 **2 个** `asr_final`，顺序与 wav 对应；
-- 窗口 A 有 `segment #1 done ...` 和 `segment #2 done ...`，**中间没有 ws closed**；
-- 窗口 B 只有一次 `client connected` / `session done`。
-
-**PTT 模式**（旁路 VAD，排查 VAD 灵敏度用）：
-
-```powershell
-python furniture\mock_furniture.py --mode ptt --server ws://127.0.0.1:8080/v1/voice --wav model\audio_output\20260509_203301\01_把客厅的灯打开.wav
-```
-
-### 快速故障定位表
-
-| 症状 | 最可能原因 | 先看哪里 |
-|---|---|---|
-| 客户端收到 `{"type":"error","message":"asr backend unreachable"}` | ASR 没起 / `ASR_WS_URL` 写错 | 窗口 A 状态；`curl :9100/v1/health` |
-| `ready` 收到但没有 `asr_partial` | 音频没送到 / 采样率不对 | 加 `--mode ptt`；确认 wav 是 16k mono |
-| 识别出乱串（如 `马听德德灯打`） | 客户端重采样混叠（wav 不是 16k） | `pip install scipy`；或把 wav 转成 16k mono |
-| 有 `asr_partial` 但没 `asr_final` | 客户端没发 `end` / VAD 静音阈值太大 | 调小 `--silence-ms 500` 或 `--mode ptt` |
-| 多句只出 1 个 `asr_final` | 两句 gap 太短，VAD 没断开 | 加大 `--gap-ms 2000`、`--silence-ms 600` |
-| 句首被吞（如 `把客厅的灯打开` → `客厅的灯打开`） | VAD 起点切早了 | 加大 `--lookback-ms 500`、`--min-speech-ms 60` |
-| Server 日志 `asr read err` 并立刻结束 | ASR 崩溃 / OOM | 看窗口 A 的 Python 异常栈 |
 
 ### 采样率约束（重要）
 

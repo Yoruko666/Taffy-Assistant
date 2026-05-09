@@ -1,74 +1,22 @@
 """Mock 家具端（PC 端模拟器） —— 家具助手"小菲"的 PC 虚拟实现。
 
 本脚本模拟一台带麦克风的智能家居设备（音箱 / 屏幕设备），跑在普通 PC 上。
-音源支持两种模式：
+支持两种模式：
 
-1. **虚拟麦克风模式（默认）**：由一个或多个 wav 文件拼成"虚拟音频流"，
-   在文件之间插入静音段，模拟用户说一句、停一会、再说一句的真实节奏。
-2. **实时麦克风模式**（加 ``--live``）：从真实物理麦克风实时采集 16kHz PCM，
-
-整体行为复刻主流智能音箱的端侧链路：
-
-    [虚拟麦克风 wav 流]
-            │
-            ▼
-    [KWS 唤醒词检测]   ← 抽象层；M2 默认实现 = AlwaysOn（始终视为已唤醒）
-            │
-            ▼
-    [VAD 端点检测]     ← webrtcvad，检测到说话开始/结束 → 自动发 start/end
-            │
-            ▼
-    [WebSocket 上行]   ── 16k PCM ──▶  Go Server (/v1/voice) ──▶  ASR Model
-            │
-            ▼
-    [接收 asr_partial / asr_final 滚屏打印]
-
-设计要点
----------
-1. **断句归家具，不归 ASR**：webrtcvad 在本机做端点检测，检测到持续静音
-   ≥ ``--silence-ms`` (默认 800ms) 就发 ``end`` 帧给 server，触发一次 ``asr_final``。
-2. **支持多句连说**：可同时传多个 wav，脚本会把它们拼起来，每句之间塞
-   ``--gap-ms`` (默认 1200ms) 的静音，模拟用户两次说话之间的停顿。
-   每段语音独立产生一对 ``start`` / ``end``，得到一个 ``asr_final``。
-3. **WS 长连接复用**：一次连接、多段语音，与真实家具行为一致。
-4. **KWS 预留**：``WakeWord`` 抽象基类 + ``AlwaysOnWakeWord`` 默认实现。
-   M3 接入 openWakeWord / Porcupine 时，只需新增一个子类，无需动主流程。
-
-依赖
-----
-    pip install -r furniture/requirements.txt
-    # 等价于：pip install websockets webrtcvad soundfile numpy
+1. **单句模式**：传入一个 wav 文件，整段发送（PTT，无 VAD）。
+2. **实时麦克风模式**（加 ``--live``）：从真实物理麦克风实时采集，VAD 自动断句。
 
 用法
 ----
-    # 1) 单句 + 经 server 透传
+    # 单句
     python furniture/mock_furniture.py \
         --server ws://127.0.0.1:8080/v1/voice \
         --device-id dev1 --token t1 \
-        --wav model/audio_output/20260509_203301/01_把客厅的灯打开.wav
+        --wav some.wav
 
-    # 2) 多句连说，模拟用户连续交互
-    python furniture/mock_furniture.py \
-        --server ws://127.0.0.1:8080/v1/voice \
-        --wav a.wav b.wav c.wav --gap-ms 1500
-
-    # 3) PTT 模式（关闭 VAD，等价老 test_stream.py）
-    python furniture/mock_furniture.py --mode ptt --wav a.wav
-
-    # 4) 直连 ASR（绕过 server，便于排查）
-    python furniture/mock_furniture.py \
-        --server ws://127.0.0.1:9100/v1/asr/stream --wav a.wav
-
-    # 5) 实时麦克风（替代 --wav，从真实麦克风采集）
+    # 实时麦克风
     python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice \
         --device-id dev1 --token t1 --live
-
-    # 6) 列出可用音频输入设备
-    python furniture/mock_furniture.py --list-devices
-
-    # 7) 指定特定麦克风设备采集
-    python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice \
-        --device-id dev1 --token t1 --live --device "Microphone (Realtek Audio)"
 """
 
 from __future__ import annotations
@@ -622,9 +570,9 @@ async def main_async(args: argparse.Namespace) -> int:
         try:
             wakeword = AlwaysOnWakeWord()
             vad = VadSegmenter(
-                aggressiveness=args.vad_level,
+                aggressiveness=2,
                 silence_ms=args.silence_ms,
-                min_speech_ms=args.min_speech_ms,
+                min_speech_ms=90,
             )
             expected_finals = await stream_live(ws, wakeword, vad, device=args.device)
 
@@ -646,21 +594,20 @@ async def main_async(args: argparse.Namespace) -> int:
         print("[mock-furniture] done")
         return 0
 
-    # ---- WAV 文件虚拟麦克风模式（原有逻辑） ----
+    # ---- WAV 单句模式（PTT，无 VAD） ----
     if not args.wav:
         print("[mock-furniture] 至少需要 --wav <文件> 或 --live")
         return 2
 
-    wavs = [Path(w) for w in args.wav]
-    for w in wavs:
-        if not w.exists():
-            print(f"[mock-furniture] wav not found: {w}")
-            return 2
+    wav_path = Path(args.wav)
+    if not wav_path.exists():
+        print(f"[mock-furniture] wav not found: {wav_path}")
+        return 2
 
-    print(f"[mock-furniture] loading {len(wavs)} wav file(s)…")
-    pcm = build_virtual_mic_stream(wavs, gap_ms=args.gap_ms, lead_ms=args.lead_ms)
+    print(f"[mock-furniture] loading {wav_path}")
+    pcm = load_wav_as_pcm16_mono(wav_path)
     duration_ms = len(pcm) // (SAMPLE_RATE * SAMPLE_WIDTH // 1000)
-    print(f"[mock-furniture] virtual mic stream: {len(pcm)} bytes ≈ {duration_ms} ms")
+    print(f"[mock-furniture] {len(pcm)} bytes ≈ {duration_ms} ms")
 
     url = build_url(args.server, args.device_id, args.token)
     print(f"[mock-furniture] connecting {url}")
@@ -669,25 +616,14 @@ async def main_async(args: argparse.Namespace) -> int:
     except Exception as e:  # noqa: BLE001
         print(f"[mock-furniture] connect failed: {e!r}")
         return 3
-    print(f"[mock-furniture] connected (mode={args.mode})")
+    print("[mock-furniture] connected (ptt mode)")
 
     stop = asyncio.Event()
     recv_task = asyncio.create_task(receiver(ws, stop))
 
     expected_finals = 0
     try:
-        if args.mode == "vad":
-            wakeword = AlwaysOnWakeWord()
-            vad = VadSegmenter(
-                aggressiveness=args.vad_level,
-                silence_ms=args.silence_ms,
-                min_speech_ms=args.min_speech_ms,
-            )
-            expected_finals = await stream_with_vad(
-                ws, pcm, wakeword, vad, args.realtime, lookback_ms=args.lookback_ms
-            )
-        else:  # ptt
-            expected_finals = await stream_ptt(ws, pcm, args.realtime)
+        expected_finals = await stream_ptt(ws, pcm, realtime=False)
 
         print(f"[mock-furniture] all PCM sent. expected asr_final count = {expected_finals}")
         # 给 server / ASR 时间产出最后一个 final
@@ -711,41 +647,24 @@ async def main_async(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Mock 家具端：wav 模拟麦克风 + KWS/VAD 自动断句 + WS 上行到 server",
+        description="Mock 家具端：wav 单句 / 实时麦克风 → WS 上行到 server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # 连接
-    p.add_argument(
-        "--server",
-        default="ws://127.0.0.1:8080/v1/voice",
-        help="目标 WS 地址。经 server: ws://host:8080/v1/voice；直连 ASR: ws://host:9100/v1/asr/stream",
-    )
-    p.add_argument("--device-id", default="dev1", help="设备 ID（仅当 server 路径需要时拼到 URL）")
-    p.add_argument("--token", default="t1", help="设备 token（仅 server 透传时使用）")
+    p.add_argument("--server", default="ws://127.0.0.1:8080/v1/voice",
+                   help="目标 WS 地址")
+    p.add_argument("--device-id", default="dev1", help="设备 ID")
+    p.add_argument("--token", default="t1", help="设备 token")
     # 音源
-    p.add_argument("--wav", nargs="+", default=None, help="一个或多个 wav 文件，将拼成连续麦克风流")
-    # 实时麦克风
-    p.add_argument("--live", action="store_true", help="从真实麦克风实时采集（替代 --wav）")
+    p.add_argument("--wav", type=str, default=None, help="wav 文件路径（单句模式）")
+    p.add_argument("--live", action="store_true", help="实时麦克风模式（替代 --wav）")
     p.add_argument("--list-devices", action="store_true", help="列出可用音频输入设备并退出")
     p.add_argument("--device", default=None,
-                   help="音频输入设备编号或名称关键词（仅 --live 模式有效，默认用系统默认设备）")
-    p.add_argument("--gap-ms", type=int, default=1200, help="多 wav 之间的静音长度（ms），默认 1200")
-    p.add_argument("--lead-ms", type=int, default=500, help="流开头的静音长度（ms），默认 500")
-    # 模式
-    p.add_argument("--mode", choices=["vad", "ptt"], default="vad",
-                   help="vad=自动断句（默认，主流智能音箱模式）；ptt=按住说话整段送（兼容老脚本）")
-    # VAD 参数
-    p.add_argument("--vad-level", type=int, default=2, choices=[0, 1, 2, 3],
-                   help="webrtcvad 灵敏度，0 最宽松 / 3 最严格，默认 2")
+                   help="音频输入设备编号或名称关键词（仅 --live 模式）")
+    # 实时麦克风 VAD
     p.add_argument("--silence-ms", type=int, default=800,
-                   help="持续静音多少毫秒判定一句话结束，默认 800")
-    p.add_argument("--min-speech-ms", type=int, default=90,
-                   help="持续语音多少毫秒判定一句话开始，默认 90（给句首爆破音留余量）")
-    p.add_argument("--lookback-ms", type=int, default=300,
-                   help="start 时把前这么多毫秒的音频也送给 ASR，避免句首被吞，默认 300")
-    # 节奏 / 等待
-    p.add_argument("--realtime", action="store_true",
-                   help="按 30ms 帧实时节奏发送（更真实但更慢）；不加 = 尽快灌完")
+                   help="VAD 静音判定时长（ms），仅 --live 模式有效，默认 800")
+    # 等待
     p.add_argument("--hold", type=float, default=15.0,
                    help="发完后等服务端响应的最大秒数，默认 15")
     return p.parse_args()
