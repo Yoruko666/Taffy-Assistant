@@ -2,6 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 python-multipart>=0.0.9
 soundfile>=0.12
+numpy>=1.24
 funasr>=1.0.27
 torch>=2.1
 torchaudio>=2.1

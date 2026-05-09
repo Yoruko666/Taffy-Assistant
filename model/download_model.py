@@ -1,15 +1,18 @@
 """下载本项目的本地语音模型到 model/ 对应目录。
 
-    ASR：FunASR paraformer-zh  -> asr_server/models/paraformer-zh/
-    TTS：Piper huayan-medium    -> tts_server/models/zh/zh_CN/huayan/medium/
+    ASR（流式）：FunASR paraformer-zh-streaming -> asr_server/models/paraformer-zh-streaming/
+    ASR（VAD） ：FunASR fsmn-vad                 -> asr_server/models/fsmn-vad/
+    ASR（离线）：FunASR paraformer-zh            -> asr_server/models/paraformer-zh/  (可选)
+    TTS        ：Piper huayan-medium             -> tts_server/models/zh/zh_CN/huayan/medium/
 
 LLM 走云端 API，无需下载。默认使用 hf-mirror 镜像，失败回退 HuggingFace 官方。
 
 用法：
-    python download_model.py                 # 全部下载
-    python download_model.py --only asr      # 只下 ASR
-    python download_model.py --only tts      # 只下 TTS
-    python download_model.py --official      # 强制走 HuggingFace 官方
+    python download_model.py                       # 默认下载 ASR(流式+VAD) + TTS
+    python download_model.py --only asr            # 只下 ASR（流式 + VAD）
+    python download_model.py --only tts            # 只下 TTS
+    python download_model.py --with-offline-asr    # 额外下载非流式 paraformer-zh（可选）
+    python download_model.py --official            # 强制走 HuggingFace 官方
 """
 
 from __future__ import annotations
@@ -27,9 +30,16 @@ ASR_DIR: Path = BASE_DIR / "asr_server" / "models"
 TTS_DIR: Path = BASE_DIR / "tts_server" / "models"
 
 
-# ASR 整仓下载
-ASR_REPO: str = "funasr/paraformer-zh"
-ASR_LOCAL_SUBDIR: str = "paraformer-zh"
+# ASR 整仓下载（流式版 + VAD）
+ASR_STREAM_REPO: str = "funasr/paraformer-zh-streaming"
+ASR_STREAM_LOCAL_SUBDIR: str = "paraformer-zh-streaming"
+
+ASR_VAD_REPO: str = "funasr/fsmn-vad"
+ASR_VAD_LOCAL_SUBDIR: str = "fsmn-vad"
+
+# 非流式 ASR（可选，仅 --with-offline-asr 时下载）
+ASR_OFFLINE_REPO: str = "funasr/paraformer-zh"
+ASR_OFFLINE_LOCAL_SUBDIR: str = "paraformer-zh"
 
 # TTS 仅拉取中文 huayan-medium 两个文件
 TTS_REPO: str = "rhasspy/piper-voices"
@@ -133,11 +143,29 @@ def _download_snapshot(
 
 
 def download_asr() -> bool:
-    target_dir = ASR_DIR / ASR_LOCAL_SUBDIR
+    """下载流式 ASR 模型 + VAD 模型（生产路径默认配置）。"""
+    ok = True
+    for repo, sub in [
+        (ASR_STREAM_REPO, ASR_STREAM_LOCAL_SUBDIR),
+        (ASR_VAD_REPO, ASR_VAD_LOCAL_SUBDIR),
+    ]:
+        target_dir = ASR_DIR / sub
+        if target_dir.exists() and any(target_dir.iterdir()):
+            log(f"[ASR] 目录已存在且非空，跳过：{target_dir}")
+            continue
+        result = _download_snapshot(repo, target_dir)
+        if result is None:
+            ok = False
+    return ok
+
+
+def download_asr_offline() -> bool:
+    """可选：下载非流式 paraformer-zh（仅给 HTTP /transcribe 调试用）。"""
+    target_dir = ASR_DIR / ASR_OFFLINE_LOCAL_SUBDIR
     if target_dir.exists() and any(target_dir.iterdir()):
-        log(f"[ASR] 目录已存在且非空，跳过：{target_dir}")
+        log(f"[ASR-OFFLINE] 目录已存在且非空，跳过：{target_dir}")
         return True
-    result = _download_snapshot(ASR_REPO, target_dir)
+    result = _download_snapshot(ASR_OFFLINE_REPO, target_dir)
     return result is not None
 
 
@@ -152,6 +180,7 @@ def download_tts() -> bool:
 
 TASKS: Dict[str, Callable[[], bool]] = {
     "asr": download_asr,
+    "asr_offline": download_asr_offline,
     "tts": download_tts,
 }
 
@@ -164,6 +193,11 @@ def parse_args() -> argparse.Namespace:
         "--only",
         choices=["asr", "tts"],
         help="只下载某一类模型（默认全部）",
+    )
+    parser.add_argument(
+        "--with-offline-asr",
+        action="store_true",
+        help="额外下载非流式 paraformer-zh（用于 HTTP /transcribe 调试，可选）",
     )
     parser.add_argument(
         "--mirror",
@@ -189,6 +223,8 @@ def main() -> int:
         endpoints = [HF_MIRROR_ENDPOINT, HF_OFFICIAL_ENDPOINT]
 
     task_names = [args.only] if args.only else ["asr", "tts"]
+    if args.with_offline_asr and "asr_offline" not in task_names:
+        task_names.append("asr_offline")
     log(f"准备下载：{', '.join(task_names)}")
 
     results: Dict[str, bool] = {}
