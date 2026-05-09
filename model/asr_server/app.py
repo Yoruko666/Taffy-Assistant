@@ -5,16 +5,22 @@
     POST /v1/asr/transcribe      multipart 上传整段音频 -> {text, duration_ms}（兼容/调试用）
     WS   /v1/asr/stream          流式语音识别（**主接口**，供 Go Server 透传）
 
-流式协议（WebSocket）：
-    客户端 -> 服务端：
-        1) 首帧 JSON 文本：{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}
-        2) 后续二进制帧：16-bit mono PCM 原始字节，建议每 ~600ms 发一包（9600 帧 / 19200 字节）
-        3) 结束 JSON 文本：{"type":"end"}
+流式协议（WebSocket，**支持单连接多段对话**）：
+    客户端 -> 服务端（同一连接内可重复 N 次）：
+        1) 段首 JSON 文本：{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}
+        2) 二进制帧：16-bit mono PCM 原始字节，建议每 ~600ms 发一包（9600 采样 / 19200 字节）
+        3) 段尾 JSON 文本：{"type":"end"}   ← 触发一次 final+eos，**连接不关**，可继续下一段
+        4) 心跳：{"type":"ping"}             ← 服务端回 {"type":"pong"}
+        5) 关闭：由客户端主动关 WS
     服务端 -> 客户端：
-        {"type":"ready"}                      ← 模型就绪、可以开始送音频
-        {"type":"partial","text":"...部分..."} ← 中间结果（会反复修正）
-        {"type":"final","text":"...最终..."}    ← 一段话识别完成（VAD 端点 / end）
-        {"type":"error","message":"..."}      ← 错误信息（连接随后关闭）
+        {"type":"ready"}                      ← 模型就绪，可以开始送音频（整个连接只发一次）
+        {"type":"partial","text":"..."}       ← 段内中间结果（会反复修正，含累计文本）
+        {"type":"final","text":"..."}         ← 本段识别完成（end 触发）
+        {"type":"eos"}                        ← 本段已结束，下一段可 start
+        {"type":"error","message":"..."}      ← 错误信息
+    语义要点：
+        - ASR cache 随每段独立：每次 end/start 之间重置，避免相邻两句相互污染。
+        - 一条 WS 可承载多段语音（像小度/小爱：WS 长连接 + 端侧 VAD 切句）。
 
 环境变量：
     ASR_MODEL_DIR        ASR 流式模型目录（默认 ./models/paraformer-zh-streaming）
@@ -104,16 +110,23 @@ def get_stream_model() -> Any:
         "device": DEVICE,
         "disable_update": True,
     }
-    # VAD 模型可选：存在则启用端点检测，缺失则降级为"客户端显式 end"
-    if VAD_MODEL_DIR.exists():
+    # VAD 模型可选：默认 **不挂**——funasr 1.3.x 在流式 paraformer 上挂 VAD 时
+    # 会把 chunk_size 当成 VAD 毫秒解析，与 paraformer 自身需要的 [0,10,5]
+    # 列表参数冲突，触发 `unsupported operand type(s) for /: 'list' and 'int'`。
+    # 我们的协议本来就靠家具端显式 `end` 断句，VAD 不是必须的。
+    # 若以后确实要打开（例如不再发 end），设环境变量 ASR_USE_VAD=1。
+    use_vad = os.environ.get("ASR_USE_VAD", "0").lower() in ("1", "true", "yes")
+    if use_vad and VAD_MODEL_DIR.exists():
         kwargs["vad_model"] = str(VAD_MODEL_DIR)
         kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
+    elif use_vad:
+        logger.warning(f"ASR_USE_VAD=1 但 VAD 模型缺失：{VAD_MODEL_DIR}，将仅依赖客户端 end 信号断句")
     else:
-        logger.warning(f"VAD 模型缺失：{VAD_MODEL_DIR}，将仅依赖客户端 end 信号断句")
+        logger.info("VAD 已禁用（依赖客户端 end 信号断句）；如需开启请设 ASR_USE_VAD=1")
 
     logger.info(
         f"加载 ASR 流式模型：{STREAM_MODEL_DIR} "
-        f"(vad={'on' if VAD_MODEL_DIR.exists() else 'off'}, device={DEVICE})"
+        f"(vad={'on' if 'vad_model' in kwargs else 'off'}, device={DEVICE})"
     )
     t0 = time.time()
     _stream_model = AutoModel(**kwargs)
@@ -303,44 +316,17 @@ def _run_stream_chunk(
 
 @app.websocket("/v1/asr/stream")
 async def asr_stream(ws: WebSocket) -> None:
-    """流式 ASR WebSocket 端点。详细协议见文件顶部 docstring。"""
+    """流式 ASR WebSocket 端点。详细协议见文件顶部 docstring。
+
+    **单 WS 多段对话**：
+        连接后先发一次 ready；随后循环 "start -> [PCM...] -> end"，
+        每个 end 触发一次 final + eos，cache 清空，连接保持，等待下一段 start。
+        客户端主动关 WS 才结束。
+    """
     await ws.accept()
     logger.info(f"ws connected: client={ws.client}")
 
-    # 1) 读取首帧 start 配置（容错：未发也按默认 16k mono PCM 处理）
-    sample_rate = SAMPLE_RATE
-    try:
-        first = await asyncio.wait_for(ws.receive(), timeout=10.0)
-    except asyncio.TimeoutError:
-        await _ws_send_error(ws, "timeout_waiting_start")
-        await ws.close()
-        return
-    except WebSocketDisconnect:
-        return
-
-    if first.get("type") == "websocket.disconnect":
-        return
-    if "text" in first and first["text"]:
-        try:
-            cfg = json.loads(first["text"])
-            if isinstance(cfg, dict) and cfg.get("type") == "start":
-                sample_rate = int(cfg.get("sample_rate", SAMPLE_RATE))
-                if sample_rate != SAMPLE_RATE:
-                    await _ws_send_error(
-                        ws, f"unsupported_sample_rate={sample_rate}, expect {SAMPLE_RATE}"
-                    )
-                    await ws.close()
-                    return
-        except json.JSONDecodeError:
-            await _ws_send_error(ws, "invalid_start_json")
-            await ws.close()
-            return
-    elif "bytes" in first and first["bytes"]:
-        # 客户端没发 start，直接发的二进制：放回缓冲区当作音频处理
-        # 简化处理：把这帧也直接走识别管道
-        pass
-
-    # 2) 加载流式模型
+    # 1) 加载模型（仅加载一次，失败即关）
     try:
         model = get_stream_model()
     except Exception as e:  # noqa: BLE001
@@ -350,17 +336,26 @@ async def asr_stream(ws: WebSocket) -> None:
 
     await ws.send_text(json.dumps({"type": "ready"}, ensure_ascii=False))
 
-    # 3) 主循环：聚合二进制帧到 CHUNK_STRIDE_BYTES 后送入流式模型
-    cache: Dict[str, Any] = {}
-    pcm_buffer = bytearray()
-    accumulated_text = ""  # 当前一句累计文本（VAD/end 后清空）
-    total_audio_ms = 0
-    t_start = time.time()
     loop = asyncio.get_running_loop()
 
-    # 如果首帧就是音频，先入缓冲
-    if "bytes" in first and first["bytes"]:
-        pcm_buffer.extend(first["bytes"])
+    # 段级状态（每个 start~end 之间独立）
+    in_segment = False
+    cache: Dict[str, Any] = {}
+    pcm_buffer = bytearray()
+    accumulated_text = ""
+
+    # 会话级计数
+    seg_count = 0
+    t_conn = time.time()
+    total_audio_ms = 0
+
+    def reset_segment() -> None:
+        """一段话结束后清空段级状态，等待下一个 start。"""
+        nonlocal in_segment, cache, pcm_buffer, accumulated_text
+        in_segment = False
+        cache = {}
+        pcm_buffer = bytearray()
+        accumulated_text = ""
 
     try:
         while True:
@@ -383,8 +378,25 @@ async def asr_stream(ws: WebSocket) -> None:
                     continue
 
                 ptype = payload.get("type")
-                if ptype == "end":
-                    # 清空缓冲区里剩余字节并标记 final
+
+                if ptype == "start":
+                    # 新一段开始：校验采样率、重置段状态
+                    sr = int(payload.get("sample_rate", SAMPLE_RATE))
+                    if sr != SAMPLE_RATE:
+                        await _ws_send_error(
+                            ws, f"unsupported_sample_rate={sr}, expect {SAMPLE_RATE}"
+                        )
+                        continue
+                    reset_segment()
+                    in_segment = True
+                    seg_count += 1
+                    logger.debug(f"segment #{seg_count} start")
+
+                elif ptype == "end":
+                    if not in_segment:
+                        # 容错：未 start 就 end，忽略（某些客户端的冗余 end）
+                        continue
+                    # 清空缓冲剩余字节并标记 final
                     if pcm_buffer:
                         pcm = _pcm_bytes_to_float32(bytes(pcm_buffer))
                         pcm_buffer.clear()
@@ -405,7 +417,11 @@ async def asr_stream(ws: WebSocket) -> None:
                             )
                         )
                     await ws.send_text(json.dumps({"type": "eos"}, ensure_ascii=False))
-                    break
+                    logger.info(
+                        f"segment #{seg_count} done: text={accumulated_text[:40]!r}"
+                    )
+                    reset_segment()  # 为下一段清零，连接保持
+
                 elif ptype == "ping":
                     await ws.send_text(json.dumps({"type": "pong"}, ensure_ascii=False))
                 else:
@@ -415,6 +431,12 @@ async def asr_stream(ws: WebSocket) -> None:
 
             # ---- 二进制音频帧 ----
             if "bytes" in msg and msg["bytes"]:
+                if not in_segment:
+                    # 容错：未 start 就送音频，启动一个隐式段（兼容首连 PTT 模式）
+                    in_segment = True
+                    seg_count += 1
+                    logger.debug(f"segment #{seg_count} implicit start (no start frame)")
+
                 pcm_buffer.extend(msg["bytes"])
                 # 凑齐一个 stride 就识别一次
                 while len(pcm_buffer) >= CHUNK_STRIDE_BYTES:
@@ -448,8 +470,8 @@ async def asr_stream(ws: WebSocket) -> None:
         except Exception:
             pass
         logger.info(
-            f"ws closed: audio_ms={total_audio_ms} cost={time.time()-t_start:.2f}s "
-            f"text={accumulated_text[:40]!r}"
+            f"ws closed: segments={seg_count} audio_ms={total_audio_ms} "
+            f"session_s={time.time()-t_conn:.2f}"
         )
 
 

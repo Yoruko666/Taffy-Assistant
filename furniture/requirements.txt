@@ -1,0 +1,12 @@
+# Mock 家具端运行依赖（PC 端，无需真实硬件）
+# 安装：pip install -r furniture/requirements.txt
+
+websockets>=11.0      # WebSocket 客户端
+webrtcvad>=2.0.10     # 端点检测 VAD（端侧自动断句）
+soundfile>=0.12       # 读取任意采样率 wav
+numpy>=1.24           # 类型转换 / 数组处理
+scipy>=1.10           # 抗混叠多相重采样（22.05k/44.1k -> 16k 必需，否则 ASR 会出乱码）
+
+# 预留（M3 唤醒词，按需启用其一）：
+# openwakeword>=0.6.0   # 开源 KWS，可自训"嗨家具"
+# pvporcupine>=3.0      # Picovoice Porcupine（商用，需 access key）

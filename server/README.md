@@ -68,15 +68,20 @@
 
 ### 协议
 
-详见 [`furniture/README.md`](../furniture/README.md) "协议：家具端 ↔ Go Server WebSocket" 章节。摘要：
+详见 [`furniture/README.md`](../furniture/README.md) "协议：家具端 ↔ Go Server WebSocket" 章节。
+
+**单 WS 多轮对话**：家具端在一条连接内可以循环发 N 组 `start / [PCM...] / end`，每组触发一次 `asr_final + eos`，连接不断开，直到家具端主动关闭。
+
+协议摘要：
 
 | 方向 | 帧类型 | 内容 |
 |---|---|---|
 | 家具→Server | text | `{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}` |
 | 家具→Server | binary | 16-bit LE PCM mono 字节流，每 ~600ms 一包 |
-| 家具→Server | text | `{"type":"end"}` |
+| 家具→Server | text | `{"type":"end"}`（端侧 VAD 触发，每轮 1 次） |
 | Server→家具 | text | `{"type":"asr_partial","text":"..."}` |
 | Server→家具 | text | `{"type":"asr_final","text":"..."}` |
+| Server→家具 | text | `{"type":"eos"}`（本段结束；**连接保持，可开始下一段**） |
 | Server→家具 | text | `{"type":"reply","text":"..."}` |
 | Server→家具 | text | `{"type":"device_done","device":"...","action":"..."}` |
 | Server→家具 | text | `{"type":"tts_audio","format":"wav","data":"<base64>"}` |
@@ -84,14 +89,14 @@
 
 ### 转换说明（Go Server 做的事）
 
-ASR Model 原生事件类型为 `ready / partial / final / eos / error`，Go Server 包装：
+ASR Model 原生事件类型为 `ready / partial / final / eos / error`，Go Server 逐帧转发并改写类型：
 
 | ASR 原生 | Go Server 转发给家具 |
 |---|---|
 | `ready` | 不转发（吞掉） |
 | `partial` | `asr_partial` |
-| `final` | `asr_final`，并触发 LLM 流程 |
-| `eos` | 不转发（吞掉） |
+| `final` | `asr_final`，并异步触发 LLM / MQTT / TTS 流程（不阻塞下一段 ASR） |
+| `eos` | `eos`（透传，家具端据此知道可以开始下一段） |
 | `error` | `error` |
 
 ---
@@ -334,13 +339,20 @@ func main() {
 
 ---
 
-## 联调：不需要家具端，先把"Server ↔ ASR"打通
+## 联调：四层验证法
 
-家具端还没开发，但可以用 Python 脚本**模拟家具端**，验证整条链路。
+家具端还没上硬件，但用 `furniture/mock_furniture.py` 当**虚拟音箱**就能把"家具端 → Go Server → ASR"端到端跑通。为便于定位问题，按四层从底到顶逐层验证——哪层红了就停在那层查，不要越级。
+
+```
+第 1 层  ASR 进程是否起来        → curl /v1/health
+第 2 层  ASR 整段识别是否正确     → curl -F audio=@xxx.wav /v1/asr/transcribe
+第 3 层  ASR 流式 WS 是否出字     → mock_furniture.py 直连 :9100
+第 4 层  Server↔Model 透传是否通  → mock_furniture.py 走 :8080
+```
 
 ### 步骤
 
-1. 启动 ASR 模型服务（在 `model/` 目录）：
+1. 启动 ASR 模型服务（`model/`）：
 
    ```powershell
    cd model
@@ -349,45 +361,69 @@ func main() {
    # python -m uvicorn asr_server.app:app --host 0.0.0.0 --port 9100
    ```
 
-   验证 ASR 自身：
+   第 1 层验证：
 
    ```powershell
-   curl http://127.0.0.1:9100/v1/health
+   curl http://127.0.0.1:9100/v1/health     # 期望 stream_loaded: true
    ```
 
-2. 启动 Go Server（占位 LLM/TTS/MQTT 也没关系，至少透传跑通）：
+2. 第 2 层（可选，确认模型本身识别 OK）：
+
+   ```powershell
+   $wav = "model\audio_output\20260509_203301\01_把客厅的灯打开.wav"
+   curl.exe -X POST -F "audio=@$wav" http://127.0.0.1:9100/v1/asr/transcribe
+   # 期望：{"text":"把客厅的灯打开", ...}
+   ```
+
+3. 启动 Go Server：
 
    ```powershell
    cd server
+   $env:PORT="8080"
+   $env:ASR_WS_URL="ws://127.0.0.1:9100/v1/asr/stream"
    go run ./cmd/server
    ```
 
-3. 用模拟脚本扮演家具端，喂一个 wav 文件给 Go Server，期望打印出 `asr_partial` / `asr_final`：
+4. 第 3 层：**直连 ASR 的流式 WS**（跳过 Server，只验模型侧流式链路）：
 
    ```powershell
-   python model/asr_server/scripts/test_stream.py `
-     --url ws://127.0.0.1:8080/v1/voice `
-     --wav path/to/test_16k_mono.wav
+   pip install -r furniture/requirements.txt    # 首次；建议同时 pip install scipy
+   python furniture/mock_furniture.py `
+     --server ws://127.0.0.1:9100/v1/asr/stream `
+     --wav model\audio_output\20260509_203301\01_把客厅的灯打开.wav
    ```
 
-   > 该脚本同样支持直连 ASR（`--url ws://127.0.0.1:9100/v1/asr/stream`），可分两段验证：
-   > - 直连 ASR 通 → 模型层 OK
-   > - 经 Go Server 通 → 透传层 OK
+   期望：`ready` → 若干 `partial` → `final: 把客厅的灯打开` → `eos`。这层通了再往第 4 层走。
 
-### 期望输出
+5. 第 4 层：**经 Go Server 透传**（端到端）：
 
-```
-[mock-furniture] connected ws://127.0.0.1:8080/v1/voice
-[mock-furniture] sent start frame
-[mock-furniture] sent 600ms PCM frame (19200 bytes)
-...
-<- asr_partial: 打开
-<- asr_partial: 打开客厅
-<- asr_partial: 打开客厅灯
-[mock-furniture] sent end frame
-<- asr_final: 打开客厅灯
-[mock-furniture] done
-```
+   ```powershell
+   # 单句
+   python furniture/mock_furniture.py `
+     --server ws://127.0.0.1:8080/v1/voice `
+     --device-id dev1 --token t1 `
+     --wav model\audio_output\20260509_203301\01_把客厅的灯打开.wav
+
+   # 多句连说（单 WS 多轮对话）
+   python furniture/mock_furniture.py `
+     --server ws://127.0.0.1:8080/v1/voice `
+     --wav a.wav b.wav c.wav --gap-ms 1500
+   ```
+
+### 期望三端日志
+
+- **家具端**：`ready` → `asr_partial` × N → `asr_final: 把客厅的灯打开` → `eos`
+- **Go Server**：`client connected` → `asr connected asr=ws://127.0.0.1:9100/...` → `session done`
+- **ASR Model**：`ws connected` → `segment #1 done: text='把客厅的灯打开'` → `ws closed segments=1`
+
+多句连说时，Server / ASR 日志中**不应该**出现中途 `ws closed` / 新的 `client connected`——整个多轮会话共用同一条连接。
+
+### 分层定位口诀
+
+- 第 3 层直连 ASR 通、第 4 层经 Server 挂 → 问题在 Go Server 透传层。
+- 第 3 层直连 ASR 就不通 → 问题在 ASR 模型（采样率、VAD、模型未下载等），与 Server 无关。
+
+更多故障定位（错误提示 → 修法）见顶层 [`README.md`](../README.md) "联调测试：四层验证法" 章节。
 
 ---
 
@@ -458,10 +494,10 @@ server/
 
 - [x] 与 ASR Model 的 WS 协议契约
 - [x] 家具端 ↔ Go Server 协议契约
-- [x] 联调脚本（`model/asr_server/scripts/test_stream.py`）
-- [ ] 搭基础脚手架（gin / 标准库 net/http；建议先 net/http 轻量起步）
-- [ ] 实现 `/v1/voice` 透传（按本文档骨架，不含 LLM/TTS/MQTT）
-- [ ] 用模拟脚本跑通"家具端 → Go Server → ASR"
+- [x] 联调脚本（`furniture/mock_furniture.py`，含 VAD 自动断句 / 单 WS 多轮 / 直连 ASR 分层排障）
+- [x] 搭基础脚手架（`cmd/server` + `internal/handler`，标准库 `net/http`）
+- [x] 实现 `/v1/voice` 透传（M1：双向透传 + 事件改名，不含 LLM/TTS/MQTT）
+- [x] 用模拟脚本跑通"家具端 → Go Server → ASR"（四层验证法全绿）
 - [ ] 实现客户端 JWT 鉴权与登录
 - [ ] 实现设备 Token 鉴权
 - [ ] 接入云端 LLM 客户端（Prompt 模板 + JSON Schema 校验）
