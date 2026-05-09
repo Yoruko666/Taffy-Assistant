@@ -30,6 +30,9 @@ model/gguf_pkg/
 *.aac
 *.pcm
 
+# test_stream_e2e.py 输出目录
+model/audio_output/
+
 # 服务运行时缓存
 model/**/.cache/
 logs/
