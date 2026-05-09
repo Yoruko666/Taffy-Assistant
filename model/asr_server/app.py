@@ -26,7 +26,7 @@
     ASR_MODEL_DIR        ASR 流式模型目录（默认 ./models/paraformer-zh-streaming）
     ASR_VAD_MODEL_DIR    VAD 模型目录（默认 ./models/fsmn-vad）
     ASR_OFFLINE_MODEL_DIR  非流式模型目录（可选，仅 HTTP 接口用，默认与 ASR_MODEL_DIR 相同）
-    ASR_DEVICE           cpu / cuda（默认 cpu）
+    ASR_DEVICE           cpu / cuda（默认 cuda）
     ASR_PORT             监听端口（默认 9100）
 """
 
@@ -62,7 +62,7 @@ OFFLINE_MODEL_DIR: Path = Path(
         str(DEFAULT_OFFLINE_MODEL_DIR if DEFAULT_OFFLINE_MODEL_DIR.exists() else STREAM_MODEL_DIR),
     )
 )
-DEVICE: str = os.environ.get("ASR_DEVICE", "cpu")
+DEVICE: str = os.environ.get("ASR_DEVICE", "cuda")
 
 # 流式分块参数（FunASR 标准配置）
 # chunk_size = [0, 10, 5] 表示：左 0 编码块、当前 10 编码块（≈600ms）、右 5 编码块（≈300ms 前瞻）
@@ -110,11 +110,6 @@ def get_stream_model() -> Any:
         "device": DEVICE,
         "disable_update": True,
     }
-    # VAD 模型可选：默认 **不挂**——funasr 1.3.x 在流式 paraformer 上挂 VAD 时
-    # 会把 chunk_size 当成 VAD 毫秒解析，与 paraformer 自身需要的 [0,10,5]
-    # 列表参数冲突，触发 `unsupported operand type(s) for /: 'list' and 'int'`。
-    # 我们的协议本来就靠家具端显式 `end` 断句，VAD 不是必须的。
-    # 若以后确实要打开（例如不再发 end），设环境变量 ASR_USE_VAD=1。
     use_vad = os.environ.get("ASR_USE_VAD", "0").lower() in ("1", "true", "yes")
     if use_vad and VAD_MODEL_DIR.exists():
         kwargs["vad_model"] = str(VAD_MODEL_DIR)

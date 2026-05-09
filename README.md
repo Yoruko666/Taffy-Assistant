@@ -48,7 +48,6 @@
 - **WS 长连接复用**：一次握手、多轮对话。家具端在同一条 `/v1/voice` 上按需 `start → PCM → end → start → PCM → end → ...`，每个 `end` 触发一次 `asr_final`。
 - **断句归端侧**：`webrtcvad` 监听持续静音 ≥ 800ms 自动发 `end`，不靠 ASR 去切句，避免云端延迟放大。
 - **KWS 抽象**：`WakeWord` 基类预留接口；M2 用 `AlwaysOnWakeWord` 默认一直活跃，M3 替换为 openWakeWord / Porcupine 即可获得"嗨家具"式唤醒，**无需动主流程**。
-- **无真实麦克风也能演示**：`furniture/mock_furniture.py` 把若干 wav 文件按"多句连说"拼成虚拟麦克风流，PC 上直接跑通全链路。
 
 ### 一次"打开客厅灯"的完整链路
 
@@ -116,35 +115,55 @@ System/
 
 ## 快速开始
 
-### 1. 克隆仓库
+### 0. 首次启动 — 安装依赖与下载模型
 
-```bash
-git clone https://github.com/Yoruko666/System.git
-cd System
+```powershell
+# Python 依赖（ASR + TTS + 家具端）
+pip install funasr
+pip install -r model\asr_server\requirements.txt
+pip install -r model\tts_server\requirements.txt
+pip install -r furniture\requirements.txt
+
+# 下载 ASR / TTS 模型权重
+cd model
+python setup_gguf.py
+python download_model.py
+cd ..
+
+# Go（安装后即可，无需额外包管理）
+# 下载：https://go.dev/dl/
 ```
 
-### 2. 启动模型工作流（语音能力，**必须先起**）
+### 1. 一键启动所有服务
 
-详见 [`model/README.md`](./model/README.md)，简要：
+在项目根目录执行（会自动打开 3 个新窗口）：
+
+```powershell
+.\start_all.ps1
+```
+
+等三个窗口中日志都稳定后，即可进行测试。关闭对应窗口即停止服务。
+
+### 2. 分步启动（或自定义配置）
+
+#### 2.1 启动模型工作流（ASR + TTS）
+
+详见 [`model/README.md`](./model/README.md)：
 
 ```powershell
 cd model
-python setup_gguf.py                          # 下载推理依赖
+python setup_gguf.py
 pip install -r asr_server/requirements.txt
 pip install -r tts_server/requirements.txt
-python download_model.py                      # 下载 ASR / TTS 模型
-.\start_all.ps1                               # 启动 ASR(:9100) + TTS(:9200)
+python download_model.py
+.\start_all.ps1          # 启动 ASR(:9100) + TTS(:9200)
 ```
 
-### 3. 启动 Go 服务器（中枢，转发音频到 model）
-
-详见 [`server/README.md`](./server/README.md)。最小启动：
+#### 2.2 启动 Go 服务器
 
 ```powershell
 cd server
-go run ./cmd/server                            # 默认监听 :8080，转发到 ws://127.0.0.1:9100/v1/asr/stream
-# 或自定义：
-# $env:PORT="8080"; $env:ASR_WS_URL="ws://127.0.0.1:9100/v1/asr/stream"; go run ./cmd/server
+go run ./cmd/server      # 监听 :8080，转发到 ws://127.0.0.1:9100/v1/asr/stream
 ```
 
 启动后健康检查：
@@ -153,59 +172,19 @@ go run ./cmd/server                            # 默认监听 :8080，转发到 
 curl http://127.0.0.1:8080/v1/health
 ```
 
-### 4. 家具端测试（单句 / 实时麦克风）
+### 4. 家具端测试（实时麦克风）
 
 ```powershell
 # 安装依赖
 pip install -r furniture/requirements.txt
 
-# 单句：wav 文件经 server 透传到 ASR
-python furniture/mock_furniture.py `
-    --server ws://127.0.0.1:8080/v1/voice `
-    --device-id dev1 --token t1 `
-    --wav some.wav
-
 # 实时麦克风：对着麦克风说话，VAD 自动断句
-python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice `
-    --device-id dev1 --token t1 --live
+python furniture/mock_furniture.py --server "ws://127.0.0.1:8080/v1/voice?device_id=dev1&token=t1"
 ```
 
 ### 5. 运行 Android 客户端
 
 详见 [`client/README.md`](./client/README.md)。
-
-## 联调测试：四层验证法
-
-按顺序跑，哪层红了就停在那层。
-
-```powershell
-# 第 1 层  ASR 健康检查
-curl http://127.0.0.1:9100/v1/health
-# 期望：stream_loaded: true
-
-# 第 2 层  ASR 整段识别（HTTP）
-$wav = "some.wav"
-curl.exe -X POST -F "audio=@$wav" http://127.0.0.1:9100/v1/asr/transcribe
-# 期望：{"text":"...","duration_ms":...}
-
-# 第 3 层  直连 ASR 流式 WS（跳过 Server）
-python furniture\mock_furniture.py --server ws://127.0.0.1:9100/v1/asr/stream --wav some.wav
-# 期望：ready → partial → final → eos
-
-# 第 4 层  经 Server 透传（端到端）
-python furniture\mock_furniture.py --server ws://127.0.0.1:8080/v1/voice --device-id dev1 --token t1 --wav some.wav
-# 期望：ready → asr_partial → asr_final → eos
-```
-
-### 采样率约束（重要）
-
-ASR 只认 **16 kHz / 16-bit / 单声道 PCM**。`mock_furniture.py` 会把任意 wav 重采样到 16k：
-
-- **强烈建议** `pip install scipy`：使用多相滤波（`resample_poly`），自带抗混叠低通；
-- 也可以用 `pip install soxr`；
-- 什么都不装时会回退线性插值，22.05k/44.1k → 16k 会严重混叠，表现为 ASR 输出中文乱串。
-
-真实硬件（ESP32 / 树莓派）麦克风应直接按 16k 采样，**不要**让家具端做重采样。
 
 ## 文档索引
 
