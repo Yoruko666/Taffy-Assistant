@@ -1,8 +1,11 @@
 """Mock 家具端（PC 端模拟器） —— 家具助手"小菲"的 PC 虚拟实现。
 
-本脚本模拟一台带麦克风的智能家居设备（音箱 / 屏幕设备），跑在普通 PC 上，
-**不需要真实麦克风**。音源由一个或多个 wav 文件拼成"虚拟音频流"，
-在文件之间插入静音段，模拟用户说一句、停一会、再说一句的真实节奏。
+本脚本模拟一台带麦克风的智能家居设备（音箱 / 屏幕设备），跑在普通 PC 上。
+音源支持两种模式：
+
+1. **虚拟麦克风模式（默认）**：由一个或多个 wav 文件拼成"虚拟音频流"，
+   在文件之间插入静音段，模拟用户说一句、停一会、再说一句的真实节奏。
+2. **实时麦克风模式**（加 ``--live``）：从真实物理麦克风实时采集 16kHz PCM，
 
 整体行为复刻主流智能音箱的端侧链路：
 
@@ -55,6 +58,17 @@
     # 4) 直连 ASR（绕过 server，便于排查）
     python furniture/mock_furniture.py \
         --server ws://127.0.0.1:9100/v1/asr/stream --wav a.wav
+
+    # 5) 实时麦克风（替代 --wav，从真实麦克风采集）
+    python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice \
+        --device-id dev1 --token t1 --live
+
+    # 6) 列出可用音频输入设备
+    python furniture/mock_furniture.py --list-devices
+
+    # 7) 指定特定麦克风设备采集
+    python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice \
+        --device-id dev1 --token t1 --live --device "Microphone (Realtek Audio)"
 """
 
 from __future__ import annotations
@@ -92,6 +106,8 @@ VAD_FRAME_BYTES = SAMPLE_RATE * VAD_FRAME_MS * SAMPLE_WIDTH // 1000  # 960
 # 推给 server 的 PCM 块大小（与 ASR chunk_size=[0,10,5] 对齐 ≈ 600ms）
 UPLINK_CHUNK_MS = 600
 UPLINK_CHUNK_BYTES = SAMPLE_RATE * UPLINK_CHUNK_MS * SAMPLE_WIDTH // 1000  # 19200
+# 30ms 帧的样本数（sounddevice blocksize 单位是 samples 而非 bytes）
+VAD_FRAME_SAMPLES = VAD_FRAME_BYTES // SAMPLE_WIDTH  # 480
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +440,142 @@ async def stream_ptt(ws, pcm: bytes, realtime: bool) -> int:
     return 1
 
 
+async def stream_live(
+    ws,
+    wakeword: WakeWord,
+    vad: VadSegmenter,
+    device: Optional[str] = None,
+) -> int:
+    """从真实麦克风实时采集，VAD 断句后推送到 WS。
+
+    使用 sounddevice.InputStream 回调 + asyncio.Queue 线程安全接力。
+    按 Ctrl+C 停止。
+    """
+    try:
+        import sounddevice as sd  # type: ignore
+    except ImportError:
+        print("[mock-furniture] 实时麦克风需安装 sounddevice：pip install sounddevice")
+        sys.exit(1)
+
+    from collections import deque
+
+    q: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=100)
+
+    def mic_callback(indata: "np.ndarray", frames: int, _time, status) -> None:
+        """sounddevice InputStream 回调（音频采集线程中执行）。"""
+        if status:
+            print(f"[mock-furniture] mic status: {status}", file=sys.stderr)
+        # indata shape: (frames, channels) float32 → int16 mono bytes
+        mono = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
+        pcm16 = np.clip(mono, -1.0, 1.0)
+        pcm16 = (pcm16 * 32767).astype("<i2")
+        # 非阻塞入队，队列满则丢弃最旧帧以保持实时性
+        try:
+            q.put_nowait(pcm16.tobytes())
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+                q.put_nowait(pcm16.tobytes())
+            except asyncio.QueueEmpty:
+                pass
+
+    # 选择设备
+    device_id: Optional[int] = None
+    if device:
+        if device.isdigit():
+            device_id = int(device)
+        else:
+            for idx, dev in enumerate(sd.query_devices()):
+                if device.lower() in dev["name"].lower() and dev["max_input_channels"] > 0:
+                    device_id = idx
+                    break
+            if device_id is None:
+                print(f"[mock-furniture] 未找到匹配 '{device}' 的输入设备")
+                return 0
+
+    print(
+        f"[mock-furniture] opening live mic (sounddevice, {SAMPLE_RATE} Hz, mono, "
+        f"{'default device' if device_id is None else f'device #{device_id}'})"
+    )
+    stream = sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype="float32",
+        callback=mic_callback,
+        blocksize=VAD_FRAME_SAMPLES,  # 每次回调 30ms = 480 samples
+        device=device_id,
+    )
+    stream.start()
+    print("[mock-furniture] mic is live — speak now, Ctrl+C to stop")
+
+    end_count = 0
+    seg_idx = 0
+    seg_buf = bytearray()
+    lookback_frames = max(0, 300 // VAD_FRAME_MS)
+    pre_buf: "deque[bytes]" = deque(maxlen=lookback_frames)
+
+    async def flush_segment_buf() -> None:
+        nonlocal seg_buf
+        if seg_buf:
+            await ws.send(bytes(seg_buf))
+            seg_buf = bytearray()
+
+    try:
+        while True:
+            try:
+                frame = await asyncio.wait_for(q.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                if not stream.active:
+                    break
+                continue
+
+            # 1) KWS
+            wakeword.feed(frame)
+            if not wakeword.is_active_window():
+                continue
+
+            # 2) VAD
+            evt = vad.feed(frame)
+            if evt == "start":
+                seg_idx += 1
+                print(
+                    f"[mock-furniture] ▶ VAD: segment #{seg_idx} START "
+                    f"(+{len(pre_buf) * VAD_FRAME_MS}ms lookback)"
+                )
+                await send_start(ws)
+                seg_buf = bytearray()
+                for pf in pre_buf:
+                    seg_buf.extend(pf)
+                pre_buf.clear()
+            elif evt == "end":
+                await flush_segment_buf()
+                await send_end(ws)
+                end_count += 1
+                print(f"[mock-furniture] ■ VAD: segment #{seg_idx} END (waiting asr_final…)")
+
+            if vad.speaking:
+                seg_buf.extend(frame)
+                if len(seg_buf) >= UPLINK_CHUNK_BYTES:
+                    await flush_segment_buf()
+            else:
+                pre_buf.append(frame)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        stream.stop()
+        stream.close()
+        print("[mock-furniture] mic stopped")
+
+    # 强制收尾
+    if vad.speaking:
+        await flush_segment_buf()
+        await send_end(ws)
+        end_count += 1
+        print("[mock-furniture] ■ stream tail end (forced)")
+
+    return end_count
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -441,6 +593,64 @@ def build_url(server: str, device_id: Optional[str], token: Optional[str]) -> st
 
 
 async def main_async(args: argparse.Namespace) -> int:
+    # ---- 列出音频设备并退出 ----
+    if args.list_devices:
+        try:
+            import sounddevice as sd
+        except ImportError:
+            print("[mock-furniture] 需安装 sounddevice：pip install sounddevice")
+            return 1
+        print("[mock-furniture] 可用音频输入设备：")
+        print(sd.query_devices())
+        return 0
+
+    # ---- 实时麦克风模式 ----
+    if args.live:
+        url = build_url(args.server, args.device_id, args.token)
+        print(f"[mock-furniture] connecting {url}")
+        try:
+            ws = await websockets.connect(url, max_size=None, open_timeout=10)
+        except Exception as e:  # noqa: BLE001
+            print(f"[mock-furniture] connect failed: {e!r}")
+            return 3
+        print("[mock-furniture] connected (mode=vad + live mic)")
+
+        stop = asyncio.Event()
+        recv_task = asyncio.create_task(receiver(ws, stop))
+
+        expected_finals = 0
+        try:
+            wakeword = AlwaysOnWakeWord()
+            vad = VadSegmenter(
+                aggressiveness=args.vad_level,
+                silence_ms=args.silence_ms,
+                min_speech_ms=args.min_speech_ms,
+            )
+            expected_finals = await stream_live(ws, wakeword, vad, device=args.device)
+
+            print(f"[mock-furniture] live mic ended. expected asr_final count = {expected_finals}")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=args.hold)
+            except asyncio.TimeoutError:
+                print(f"[mock-furniture] hold timeout reached ({args.hold}s), exiting")
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(recv_task, timeout=2)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                recv_task.cancel()
+
+        print("[mock-furniture] done")
+        return 0
+
+    # ---- WAV 文件虚拟麦克风模式（原有逻辑） ----
+    if not args.wav:
+        print("[mock-furniture] 至少需要 --wav <文件> 或 --live")
+        return 2
+
     wavs = [Path(w) for w in args.wav]
     for w in wavs:
         if not w.exists():
@@ -513,7 +723,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device-id", default="dev1", help="设备 ID（仅当 server 路径需要时拼到 URL）")
     p.add_argument("--token", default="t1", help="设备 token（仅 server 透传时使用）")
     # 音源
-    p.add_argument("--wav", nargs="+", required=True, help="一个或多个 wav 文件，将拼成连续麦克风流")
+    p.add_argument("--wav", nargs="+", default=None, help="一个或多个 wav 文件，将拼成连续麦克风流")
+    # 实时麦克风
+    p.add_argument("--live", action="store_true", help="从真实麦克风实时采集（替代 --wav）")
+    p.add_argument("--list-devices", action="store_true", help="列出可用音频输入设备并退出")
+    p.add_argument("--device", default=None,
+                   help="音频输入设备编号或名称关键词（仅 --live 模式有效，默认用系统默认设备）")
     p.add_argument("--gap-ms", type=int, default=1200, help="多 wav 之间的静音长度（ms），默认 1200")
     p.add_argument("--lead-ms", type=int, default=500, help="流开头的静音长度（ms），默认 500")
     # 模式

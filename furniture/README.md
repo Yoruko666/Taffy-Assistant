@@ -33,8 +33,9 @@
 
 ## PC 端模拟器 `mock_furniture.py`（"虚拟小菲"）
 
-脚本定位：**不需要真实麦克风**，用若干 wav 文件拼成"虚拟麦克风流"——文件之间塞静音模拟用户停顿。完整跑一条
-`wav 流 → KWS → VAD → WS 上行 → asr_partial/asr_final 滚屏` 的端侧链路。
+脚本定位：**不需要真实麦克风**（默认模式），用若干 wav 文件拼成"虚拟麦克风流"——文件之间塞静音模拟用户停顿。
+也支持实时麦克风模式（``--live``），从物理麦克风真实采集。完整跑一条
+`(wav 流 | 实时麦克风) → KWS → VAD → WS 上行 → asr_partial/asr_final 滚屏` 的端侧链路。
 
 ### 端侧流水线
 
@@ -65,6 +66,7 @@ pip install -r furniture/requirements.txt
 - `webrtcvad` —— 端侧 VAD，自动断句
 - `soundfile`、`numpy` —— wav 解析与格式转换
 - `scipy` —— **抗混叠多相重采样**（`resample_poly`）。喂入非 16k 的 wav 时必须有，否则会严重混叠（典型表现：`把客厅的灯打开` → `马听德德灯打`）
+- `sounddevice` —— **实时麦克风采集**（``--live`` 模式需要）
 - 预留 `openwakeword` / `pvporcupine` —— M3 唤醒词
 
 > 真实硬件建议麦克风直接按 16 kHz 采样，**不要**在家具端做重采样。`mock_furniture.py` 的重采样只是为了 PC 上能直接用现成 wav 联调。
@@ -90,6 +92,17 @@ python furniture/mock_furniture.py --mode ptt --wav a.wav
 # 4) 直连 ASR 排障（跳过 server）
 python furniture/mock_furniture.py `
     --server ws://127.0.0.1:9100/v1/asr/stream --wav a.wav
+
+# 5) 实时麦克风：对着麦克风说话，VAD 自动断句
+python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice `
+    --device-id dev1 --token t1 --live
+
+# 6) 列出可用音频设备
+python furniture/mock_furniture.py --list-devices
+
+# 7) 指定特定麦克风设备
+python furniture/mock_furniture.py --server ws://127.0.0.1:8080/v1/voice `
+    --device-id dev1 --token t1 --live --device "Microphone (Realtek Audio)"
 ```
 
 ### 关键参数
@@ -103,8 +116,11 @@ python furniture/mock_furniture.py `
 | `--vad-level` | 2 | webrtcvad 灵敏度 0~3，越大越严 |
 | `--gap-ms` | 1200 | 多 wav 之间插入的静音（模拟用户两句之间的停顿） |
 | `--lead-ms` | 500 | 流开头静音（给 VAD 一段稳定的非语音基线） |
-| `--realtime` | off | 按 30ms 帧实时节奏发送（更真实但更慢） |
+| `--realtime` | off | 按 30ms 帧实时节奏发送（更真实但更慢）；`--live` 模式下强制启用 |
 | `--hold` | 15 | 发完后等服务端响应的最大秒数 |
+| `--live` | off | 从真实麦克风实时采集（替代 `--wav`） |
+| `--list-devices` | off | 列出可用音频输入设备并退出 |
+| `--device` | 系统默认 | 指定音频输入设备编号或名称关键词（仅 `--live` 模式） |
 
 ### 识别质量小贴士
 
