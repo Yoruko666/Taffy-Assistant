@@ -5,30 +5,32 @@
 
 ## 项目简介
 
-本项目为一套面向全屋智能场景的语音交互系统，由 **家具端、客户端、服务器、大模型工作流** 四部分组成。家具助手名为 **小菲**——一台带麦克风与扬声器的智能家居设备。用户可通过 Android 客户端以文本方式、或对着"小菲"以语音方式与大模型交互，系统自动将自然语言指令解析为对家居设备的控制命令，由服务器分发到家具端执行并反馈状态。
+本项目为一套面向全屋智能场景的语音交互系统，由 **家具端、客户端、服务器、模型服务** 四部分组成。家具助手名为 **小菲**——一台带麦克风与扬声器的智能家居设备。用户可通过 Android 客户端以文本方式、或对着"小菲"以语音方式与大模型交互，系统自动将自然语言指令解析为对家居设备的控制命令，由服务器分发到家具端执行并反馈状态。
 
 整体形态对齐主流智能音箱的端云分工（端侧 KWS+VAD，云端 ASR/LLM/TTS）：
 
 - **家具端（小菲） = 本地硬件**：跑在音箱 / PC 模拟器上，负责 **录音 → KWS 唤醒词 → VAD 端点检测 → WS 上行 → 播放 TTS**。**断句在端侧做**，不靠云端。
-- **Go Server = 中枢**：一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 都原样转发给 ASR，ASR 的 `asr_partial / asr_final` 回推家具；`asr_final` 触发 LLM → MQTT 设备控制 → 本地 TTS 合成回包。
-- **Python 模型工作流**：本地 ASR（FunASR paraformer-zh-streaming）+ 本地 TTS（Piper）+ 云端 LLM API。
+- **Go Server = 中枢 + 工作流编排**：一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 都原样转发给 ASR，ASR 的 `asr_partial / asr_final` 回推家具；`asr_final` 触发 **Server 内部工作流**（通过 `config.yaml` 配置的 URL 调用云端 LLM → 返回 `llm_result`）。Server 承担全部逻辑编排，不再依赖外部工作流引擎。
+- **模型服务**：仅提供本地 ASR（FunASR paraformer-zh-streaming）和 TTS（Piper）推理能力，由 Server 按需调用。
 
 ```
-   ┌──────────────────┐                              ┌────────────────────┐
-   │  Android 客户端   │   HTTP / WebSocket           │   Go 服务器（中枢）  │   HTTP / WebSocket   ┌────────────────────────┐
-   │   (client/)      │ ◀───────────────────────────▶│     (server/)      │ ◀──────────────────▶│  Python 模型工作流       │
-   └──────────────────┘  登录/对话/状态/场景           └─────┬──────┬───────┘   ASR · LLM · TTS    │   (model/)              │
-                                                            │      │                              │   ASR :9100             │
-                                                            │      │                              │   TTS :9200             │
-                                                  WebSocket │      │ MQTT                         │   云端 LLM API          │
-                                                  音频上下行 │      │ 设备控制                      └────────────────────────┘
-                                                            ▼      ▼
-                                                  ┌────────────────────────┐
-                                                  │  家具端（模拟器/硬件）    │
-                                                  │   (furniture/)         │
-                                                  │  麦克风 + KWS + VAD +   │
-                                                  │  扬声器 + 设备          │
-                                                  └────────────────────────┘
+   ┌──────────────────┐                              ┌──────────────────────┐
+   │  Android 客户端   │   HTTP / WebSocket           │   Go 服务器（中枢）    │   HTTP / WebSocket   ┌──────────────────┐
+   │   (client/)      │ ◀───────────────────────────▶│     (server/)        │ ◀──────────────────▶│  模型服务          │
+   └──────────────────┘  登录/对话/状态/场景           └──┬──────┬──────┬────┘   ASR · TTS          │   (model/)        │
+                                                         │      │      │                            │   ASR :9100       │
+                                                         │      │      │  HTTPS                      │   TTS :9200       │
+                                               WebSocket │      │  MQTT ├──────────────┐             └──────────────────┘
+                                               音频上下行 │      │ 设备  │              ▼
+                                                         │      │ 控制  │   ┌─────────────────────┐
+                                                         ▼      ▼      │   │   云端 LLM API      │
+                                                  ┌─────────────────┐  │   │  (config.yaml 配置)  │
+                                                  │ 家具端（模拟器/    │  │   │  $env:LLM_API_KEY   │
+                                                  │  硬件）           │  │   └─────────────────────┘
+                                                  │ (furniture/)     │  │
+                                                  │ 麦克风+KWS+VAD+  │  │
+                                                  │ 扬声器+设备       │  │
+                                                  └─────────────────┘  │
 ```
 
 ### 端侧（小菲）的职责链（重要）
@@ -36,7 +38,7 @@
 家具端内部严格按下列流水线工作，**和主流商用智能音箱完全一致**：
 
 ```
-[麦克风/虚拟音频流] → [KWS 唤醒词检测] → [VAD 端点检测] → [WS 上行 PCM] → [接收 asr_partial/asr_final] → [播放 tts_audio]
+[麦克风/虚拟音频流] → [KWS 唤醒词检测] → [VAD 端点检测] → [WS 上行 PCM] → [接收 asr_partial/asr_final] → [接收 llm_result] → [恢复 VAD]
                          ↑ 抽象层               ↑ webrtcvad
                          M2 默认 AlwaysOn      （端侧自动断句，不依赖云端 VAD）
                          M3 可切 openWakeWord /
@@ -49,15 +51,14 @@
 - **断句归端侧**：`webrtcvad` 监听持续静音 ≥ 800ms 自动发 `end`，不靠 ASR 去切句，避免云端延迟放大。
 - **KWS 抽象**：`WakeWord` 基类预留接口；M2 用 `AlwaysOnWakeWord` 默认一直活跃，M3 替换为 openWakeWord / Porcupine 即可获得"嗨家具"式唤醒，**无需动主流程**。
 
-### 一次"打开客厅灯"的完整链路
+### 一次"打开客厅灯"的完整链路（M2 当前能力）
 
 1. 家具端：KWS 判定处于活跃会话窗口 → VAD 检测到用户开始说话 → 向 Server 发 `start` + 16k PCM 帧（600ms / 包）；
 2. Server 把 start / PCM 透传给 model 的 `ws://127.0.0.1:9100/v1/asr/stream`，ASR 的 `partial` 事件加 `asr_` 前缀回推家具；
-3. 用户说完停顿 ≥ 800ms，家具端 VAD 自动发 `end` → ASR 回 `final`（Server 转成 `asr_final`）+ `eos`；
-4. Server 拿到 `asr_final` 文本后调用云端 LLM，得到结构化指令与回复文案；
-5. Server 调用 model 的 TTS（`http://127.0.0.1:9200/v1/tts/synthesize`），把 wav base64 后通过**同一条 WS** 推回家具端播放；
-6. Server 同时通过 MQTT 把控制指令下发给"客厅灯"那台家具，并把执行结果通过 WebSocket 推送给客户端做状态展示；
-7. 用户继续说下一句 → 家具端复用同一条 WS 再次 `start` → 进入下一轮对话。
+3. 用户说完停顿 ≥ 800ms，家具端 VAD 自动发 `end` → **家具端暂停语音检测** → ASR 回 `final`（Server 转成 `asr_final`）+ `eos`；
+4. Server 拿到 `asr_final` 文本后，异步调用 `config.yaml` 中配置的云端 LLM API，等待结果；
+5. 家具端收到 `llm_result` 后打印回答，**恢复语音检测**，等待下一轮对话；
+6. 用户继续说下一句 → 家具端复用同一条 WS 再次 `start` → 进入下一轮对话。
 
 ## 技术栈
 
@@ -66,7 +67,7 @@
 | 家具端 `furniture/` | PC 端：Python + `webrtcvad`（默认）；硬件可选 ESP32 / 树莓派；唤醒词可选 openWakeWord / Porcupine | 音频走 WebSocket 到 server；设备控制走 MQTT 到 server。**不直连 model** |
 | 客户端 `client/` | Android（Kotlin + Jetpack Compose） | HTTP / WebSocket 到 server；只对 server 一个端点 |
 | 服务器 `server/` | Go 1.22 标准库 `net/http` + `gorilla/websocket`（后续按需接 MQTT 客户端、MySQL、Redis） | 中枢：聚合 model（ASR/TTS）、云端 LLM、MQTT broker、客户端、家具端 |
-| 模型工作流 `model/` | Python（FastAPI） | 以本地 HTTP / WebSocket 暴露给 server：<br>• **流式 ASR**（FunASR paraformer-zh-streaming，`:9100`，WS `/v1/asr/stream` + REST `/v1/asr/transcribe`）<br>• **本地 TTS**（Piper huayan-medium，`:9200`，REST `/v1/tts/synthesize`）<br>• **云端 LLM API**（通义/豆包/DeepSeek 任选，由 server 直接调用） |
+| 模型服务 `model/` | Python（FastAPI） | 仅提供模型推理服务，不参与业务逻辑：<br>• **流式 ASR**（FunASR paraformer-zh-streaming，`:9100`，WS `/v1/asr/stream`）<br>• **本地 TTS**（Piper huayan-medium，`:9200`，REST `/v1/tts/synthesize`）<br>业务工作流（LLM 调用、指令解析、设备控制）由 Server 编排 |
 | 数据库 | MySQL + Redis（M3 接入） | 由 server 持有连接，客户端不直接访问 |
 | 消息中间件 | MQTT broker（Mosquitto / EMQX，外部部署） | server 既是 publisher（下发控制）也是 subscriber（接收设备状态） |
 | 版本管理 | Git + GitHub | 仓库：<https://github.com/Yoruko666/System> |
@@ -90,17 +91,19 @@ System/
 ├── server/                                         # Go 服务器（中枢：透传/LLM/TTS/MQTT/CRUD）
 │   ├── README.md
 │   ├── go.mod / go.sum
-│   ├── cmd/server/main.go                          # 入口：路由注册 + 优雅退出
+│   ├── config.yaml                                 # 大模型配置（URL/Model/SystemPrompt）
+│   ├── cmd/server/main.go                          # 入口：加载配置 + 路由注册 + 优雅退出
 │   └── internal/handler/                           # HTTP / WebSocket 处理器
-│       ├── health.go                               # /v1/health
-│       └── voice.go                                # /v1/voice 家具端音频上下行（单 WS 多轮透传 ASR）
+│       ├── config.go                               # AppConfig / LLMConfig 解析（支持环境变量）
+│       ├── health.go                               # /v1/health（含 LLM 状态）
+│       └── voice.go                                # /v1/voice 家具端音频上下行 + LLM 异步调用
 │
 ├── furniture/                                      # 家具端"小菲"（KWS + VAD + WS 长连接）
 │   ├── README.md                                   # 家具 ↔ server WS 协议契约
 │   ├── requirements.txt                            # websockets / webrtcvad / soundfile / numpy
 │   └── mock_furniture.py                           # PC 端模拟器：wav 当虚拟麦克风，端侧自动断句
 │
-└── model/                                          # 大模型工作流（Python）
+└── model/                                          # 模型服务（ASR + TTS 推理）
     ├── README.md                                   # 模块详细说明
     ├── setup_gguf.py                               # 一键下载推理依赖到 gguf_pkg/
     ├── download_model.py                           # 一键下载 ASR / TTS 模型
@@ -139,6 +142,9 @@ cd ..
 在项目根目录执行（会自动打开 3 个新窗口）：
 
 ```powershell
+# 编辑 server/config.yaml 填入大模型 URL，或通过环境变量设置 API Key
+$env:LLM_API_KEY = "sk-你的key" #单次设置
+[Environment]::SetEnvironmentVariable("LLM_API_KEY", "sk-你的key", "User") #永久设置
 .\start_all.ps1
 ```
 
@@ -146,23 +152,22 @@ cd ..
 
 ### 2. 分步启动（或自定义配置）
 
-#### 2.1 启动模型工作流（ASR + TTS）
+#### 2.1 启动模型服务（ASR + TTS）
 
 详见 [`model/README.md`](./model/README.md)：
 
 ```powershell
 cd model
-python setup_gguf.py
-pip install -r asr_server/requirements.txt
-pip install -r tts_server/requirements.txt
-python download_model.py
 .\start_all.ps1          # 启动 ASR(:9100) + TTS(:9200)
 ```
 
-#### 2.2 启动 Go 服务器
+#### 2.2 配置大模型并启动 Go 服务器
 
 ```powershell
 cd server
+# 编辑 config.yaml 填入大模型 URL，或通过环境变量设置 API Key
+$env:LLM_API_KEY = "sk-你的key" #单次设置
+[Environment]::SetEnvironmentVariable("LLM_API_KEY", "sk-你的key", "User") #永久设置
 go run ./cmd/server      # 监听 :8080，转发到 ws://127.0.0.1:9100/v1/asr/stream
 ```
 
@@ -172,13 +177,12 @@ go run ./cmd/server      # 监听 :8080，转发到 ws://127.0.0.1:9100/v1/asr/s
 curl http://127.0.0.1:8080/v1/health
 ```
 
-### 4. 家具端测试（实时麦克风）
+也可不配大模型（LLM 功能自动降级），仅测试 ASR 透传链路的启动方式不变。
+
+### 4. 家具端测试（实时麦克风，含 LLM 多轮对话）
 
 ```powershell
-# 安装依赖
-pip install -r furniture/requirements.txt
-
-# 实时麦克风：对着麦克风说话，VAD 自动断句
+# 实时麦克风：说话 → VAD 断句 → ASR 识别 → LLM 回复 → 恢复检测
 python furniture/mock_furniture.py --server "ws://127.0.0.1:8080/v1/voice?device_id=dev1&token=t1"
 ```
 

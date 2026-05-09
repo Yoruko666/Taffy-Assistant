@@ -1,12 +1,12 @@
-// Command server 是 SHVA 系统的 Go 中枢服务（M1：仅健康检查 + /v1/voice 透传 ASR）。
+// Command server 是 SHVA 系统的 Go 中枢服务（M2：语音透传 + 大模型分析）。
 //
 // 启动：
 //
-//	# 默认监听 :8080，转发 ASR 到 ws://127.0.0.1:9100/v1/asr/stream
+//	# 默认监听 :8080，读取同目录 config.yaml
 //	go run ./cmd/server
 //
 //	# 自定义
-//	$env:PORT="8080"; $env:ASR_WS_URL="ws://127.0.0.1:9100/v1/asr/stream"; go run ./cmd/server
+//	$env:PORT="8080"; $env:CONFIG_PATH="config.yaml"; go run ./cmd/server
 //
 // 联调：
 //
@@ -34,10 +34,25 @@ func main() {
 
 	port := getenv("PORT", "8080")
 	asrWS := getenv("ASR_WS_URL", "ws://127.0.0.1:9100/v1/asr/stream")
+	configPath := getenv("CONFIG_PATH", "config.yaml")
+
+	// 加载配置
+	cfg, err := handler.LoadConfig(configPath)
+	if err != nil {
+		slog.Warn("config load failed, LLM features disabled", "path", configPath, "err", err)
+		cfg = nil // 没有配置时 LLM 功能不可用
+	} else {
+		slog.Info("config loaded",
+			"llm_url", cfg.LLM.URL,
+			"llm_model", cfg.LLM.Model,
+		)
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/health", handler.Health)
-	mux.Handle("/v1/voice", handler.NewVoiceHandler(asrWS))
+	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		handler.HealthWithConfig(w, r, cfg)
+	})
+	mux.Handle("/v1/voice", handler.NewVoiceHandler(asrWS, cfg))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

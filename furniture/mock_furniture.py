@@ -1,5 +1,9 @@
 """Mock 家具端（PC 端模拟器） ———— 实时麦克风 → VAD → WS 上行测试。
 
+M2 行为变更：
+  - VAD 检测到句尾 end 后，暂停语音检测，等待大模型返回结果（llm_result）；
+  - 收到 llm_result 后恢复语音检测，继续下一轮对话。
+
 用法
 ----
     # 实时麦克风
@@ -80,6 +84,12 @@ class VadSegmenter:
     def speaking(self) -> bool:
         return self._speaking
 
+    def reset(self) -> None:
+        """VAD 在一段话结束后清空状态。"""
+        self._speaking = False
+        self._silence_run = 0
+        self._speech_run = 0
+
     def feed(self, frame_pcm16: bytes) -> str:
         if len(frame_pcm16) != VAD_FRAME_BYTES:
             return ""
@@ -112,9 +122,16 @@ class VadSegmenter:
 # ---------------------------------------------------------------------------
 
 
-async def receiver(ws, stop: asyncio.Event) -> None:
-    """打印 ASR 识别结果 —— 逐字增量输出，像打字机一样。"""
-    last_text = ""  # 上一段累计文本，用于算增量
+async def receiver(
+    ws,
+    stop: asyncio.Event,
+    llm_done: asyncio.Event,
+) -> None:
+    """接收服务端事件，输出简洁的对话格式。
+
+    用户说话结束 → 打印 `用户：<asr_final文本>`
+    大模型返回  → 打印 `小菲：<llm_result文本>`
+    """
     try:
         async for msg in ws:
             if isinstance(msg, bytes):
@@ -126,20 +143,15 @@ async def receiver(ws, stop: asyncio.Event) -> None:
             t = evt.get("type", "?")
             cur = evt.get("text", "")
 
-            if t in ("partial", "asr_partial"):
-                # 只输出增量部分（新识别的字）
-                if len(cur) > len(last_text):
-                    print(cur[len(last_text):], end="", flush=True)
-                last_text = cur
-            elif t in ("final", "asr_final"):
-                # 补全 final 中多出的字，加换行
-                if len(cur) > len(last_text):
-                    print(cur[len(last_text):])
-                else:
-                    print()
-                last_text = ""
-            elif t == "ready":
-                print("   (ASR 就绪)")
+            if t in ("final", "asr_final"):
+                print(f"用户：{cur}")
+            elif t == "llm_result":
+                if cur:
+                    print(f"小菲：{cur}")
+                llm_done.set()
+            elif t == "llm_error":
+                print(f"小菲：出错了（{cur}）")
+                llm_done.set()
     except websockets.ConnectionClosed:
         pass
     finally:
@@ -163,9 +175,17 @@ async def stream_live(
     ws,
     wakeword: WakeWord,
     vad: VadSegmenter,
+    llm_done: asyncio.Event,
     device: Optional[str] = None,
+    silence_ms: int = 800,
 ) -> int:
-    """从真实麦克风实时采集，VAD 断句后推送到 WS。"""
+    """从真实麦克风实时采集，VAD 断句后推送到 WS。
+
+    M2 行为：
+      - VAD 检测到 end 后暂停语音检测；
+      - 等待 llm_done 事件（由 receiver 在收到 llm_result 时设置）；
+      - 恢复语音检测，进入下一轮对话。
+    """
     try:
         import sounddevice as sd
     except ImportError:
@@ -205,6 +225,7 @@ async def stream_live(
                 return 0
 
     print("[mock-furniture] mic is live — speak now, Ctrl+C to stop")
+    print("-" * 60)
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
@@ -220,6 +241,9 @@ async def stream_live(
     lookback_frames = max(0, 300 // VAD_FRAME_MS)
     pre_buf: "deque[bytes]" = deque(maxlen=lookback_frames)
 
+    # 语音检测暂停标记：大模型处理中不检测新语音
+    vad_paused = False
+
     async def flush_segment_buf() -> None:
         nonlocal seg_buf
         if seg_buf:
@@ -233,6 +257,20 @@ async def stream_live(
             except asyncio.TimeoutError:
                 if not stream.active:
                     break
+                continue
+
+            # ---- 暂停检测：不处理音频，只等待 llm_done ----
+            if vad_paused:
+                # 等待大模型返回（检查事件是否已被设置）
+                try:
+                    await asyncio.wait_for(llm_done.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    # 超时保护：防止永远阻塞
+                    print("\n[warning] LLM 等待超时，强制恢复语音检测")
+                llm_done.clear()
+                vad_paused = False
+                vad.reset()
+                print("-" * 60)
                 continue
 
             wakeword.feed(frame)
@@ -250,6 +288,9 @@ async def stream_live(
                 await flush_segment_buf()
                 await send_end(ws)
                 end_count += 1
+                # M2：end 后暂停语音检测，等大模型结果
+                vad_paused = True
+                continue  # 不把当前帧计入 speaking 处理
 
             if vad.speaking:
                 seg_buf.extend(frame)
@@ -295,12 +336,14 @@ async def main_async(args: argparse.Namespace) -> int:
         return 3
 
     stop = asyncio.Event()
-    recv_task = asyncio.create_task(receiver(ws, stop))
+    # llm_done：receiver 收到 llm_result 后设置，stream_live 等待后继续
+    llm_done = asyncio.Event()
+    recv_task = asyncio.create_task(receiver(ws, stop, llm_done))
 
     try:
         wakeword = AlwaysOnWakeWord()
         vad = VadSegmenter(aggressiveness=2, silence_ms=800, min_speech_ms=90)
-        await stream_live(ws, wakeword, vad, device=args.device)
+        await stream_live(ws, wakeword, vad, llm_done, device=args.device)
 
         try:
             await asyncio.wait_for(stop.wait(), timeout=15)

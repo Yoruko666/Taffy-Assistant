@@ -1,0 +1,26 @@
+# 自动处理跨平台换行符
+* text=auto
+
+# Go 源码 - 统一 LF（Go 工具链偏好 LF）
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Python / Markdown / YAML - 跟随系统（Windows CRLF, macOS/Linux LF）
+*.py text
+*.md text
+*.yaml text
+*.yml text
+*.json text
+*.ps1 text
+*.toml text
+
+# 二进制文件 - 不进行换行符转换
+*.onnx binary
+*.gguf binary
+*.pt binary
+*.wav binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.whl binary

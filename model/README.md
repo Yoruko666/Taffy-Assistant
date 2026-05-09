@@ -332,8 +332,9 @@ PASS: 6/6
 ## 后续工作（TODO）
 
 - [x] 流式 ASR WebSocket 接口（主接口）与联调脚本
-- [ ] Go Server 完成 `/v1/voice` WS 透传层（见 [`server/README.md`](../server/README.md)）
-- [ ] Go Server 接入云端 LLM → MQTT 设备控制 → 本地 TTS 回播家具端
+- [x] Go Server 完成 `/v1/voice` WS 透传层（见 [`server/README.md`](../server/README.md)）
+- [x] Go Server 接入云端 LLM（config.yaml + $env:LLM_API_KEY）
+- [ ] Go Server 接入 MQTT 设备控制与 TTS 回播
 - [ ] ASR / TTS 接入 Go Server 的健康巡检（`/v1/health`）
 - [ ] 家具端协议落地（见 [`furniture/README.md`](../furniture/README.md)）
 

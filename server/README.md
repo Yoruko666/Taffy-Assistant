@@ -22,11 +22,12 @@
                          │  │ partial / final            │
                          │  └────────────────────────────┘
                          │
-                         ├──HTTPS──> [云端 LLM API]   返回 {reply, commands[]}
+                         ├──HTTPS──> [云端 LLM API]  ←  config.yaml + $env:LLM_API_KEY
+                         │             返回 llm_result
                          │
-                         ├──MQTT───> [EMQX] ──> [其他家具：灯/空调/窗帘]
+                         ├──MQTT───> [EMQX] ──> [其他家具：灯/空调/窗帘]  (M3)
                          │
-                         └──HTTP───> [TTS Model :9200]   返回 wav 字节
+                         └──HTTP───> [TTS Model :9200]   返回 wav 字节  (M3)
 
 
 [客户端 App] ──HTTPS / WSS──> Go Server 的 REST + 状态推送（不走音频）
@@ -72,19 +73,23 @@
 
 **单 WS 多轮对话**：家具端在一条连接内可以循环发 N 组 `start / [PCM...] / end`，每组触发一次 `asr_final + eos`，连接不断开，直到家具端主动关闭。
 
-协议摘要：
+协议摘要（M2 完整版）：
 
 | 方向 | 帧类型 | 内容 |
 |---|---|---|
 | 家具→Server | text | `{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}` |
 | 家具→Server | binary | 16-bit LE PCM mono 字节流，每 ~600ms 一包 |
 | 家具→Server | text | `{"type":"end"}`（端侧 VAD 触发，每轮 1 次） |
+| 家具→Server | text | `{"type":"ping"}`（保活） |
+| Server→家具 | text | `{"type":"pong"}` |
 | Server→家具 | text | `{"type":"asr_partial","text":"..."}` |
 | Server→家具 | text | `{"type":"asr_final","text":"..."}` |
 | Server→家具 | text | `{"type":"eos"}`（本段结束；**连接保持，可开始下一段**） |
-| Server→家具 | text | `{"type":"reply","text":"..."}` |
-| Server→家具 | text | `{"type":"device_done","device":"...","action":"..."}` |
-| Server→家具 | text | `{"type":"tts_audio","format":"wav","data":"<base64>"}` |
+| Server→家具 | text | `{"type":"llm_result","text":"..."}`（M2：大模型回答） |
+| Server→家具 | text | `{"type":"llm_error","message":"..."}`（M2：大模型调用失败） |
+| Server→家具 | text | `{"type":"reply","text":"..."}`（M3） |
+| Server→家具 | text | `{"type":"device_done","device":"...","action":"..."}`（M3） |
+| Server→家具 | text | `{"type":"tts_audio","format":"wav","data":"<base64>"}`（M3） |
 | Server→家具 | text | `{"type":"error","message":"..."}` |
 
 ### 转换说明（Go Server 做的事）
@@ -95,246 +100,64 @@ ASR Model 原生事件类型为 `ready / partial / final / eos / error`，Go Ser
 |---|---|
 | `ready` | 不转发（吞掉） |
 | `partial` | `asr_partial` |
-| `final` | `asr_final`，并异步触发 LLM / MQTT / TTS 流程（不阻塞下一段 ASR） |
-| `eos` | `eos`（透传，家具端据此知道可以开始下一段） |
+| `final` | `asr_final`，**并异步触发 LLM 调用**（不阻塞下一段 ASR 回传） |
+| `eos` | `eos`（透传） |
 | `error` | `error` |
+
+**M2 核心逻辑**：`asr_final` 触发 Server 启动一个 goroutine，用 `config.yaml` 中配置的 URL + `$env:LLM_API_KEY` 调用兼容 OpenAI 格式的大模型 API，等待返回后将结果通过 `llm_result` 事件送回家具端。家具端收到后恢复 VAD 语音检测，进入下一轮对话。
+
+> 若 ASR 返回空文本（如环境噪音误触发），Server 直接发空 `llm_result` 回家具端，不调用 LLM，VAD 正常恢复。避免卡死。
 
 ---
 
-## 骨架代码：WS 透传 + LLM 编排
+## 实现源码参考（M2 已落地）
 
-> **本轮目标：先打通"家具端 ↔ Go Server ↔ ASR"这一段**。LLM / TTS / MQTT 留 TODO。
+> 骨架设计阶段的伪代码已替换为真实实现。核心文件结构如下：
+
+```
+server/
+├── config.yaml                          # LLM API 配置（url / model / system_prompt）
+├── cmd/server/main.go                   # 入口：加载配置 → 路由注册 → 优雅退出
+└── internal/handler/
+    ├── config.go                        # AppConfig / LLMConfig 结构体 + YAML 解析 + 环境变量覆盖
+    ├── health.go                        # /v1/health（含 LLM 状态：configured / disabled）
+    └── voice.go                         # /v1/voice（核心）：
+                                         #   · 家具端 ↔ ASR 双向透传
+                                         #   · ASR 事件翻译（partial → asr_partial 等）
+                                         #   · asr_final 触发异步 LLM 调用
+                                         #   · 写客户端 WS 线程安全（sync.Mutex）
+```
 
 ### 依赖
 
 ```bash
 go get github.com/gorilla/websocket
-go get github.com/golang-jwt/jwt/v5
-# 后续接 MQTT：
-# go get github.com/eclipse/paho.mqtt.golang
+go get gopkg.in/yaml.v3
 ```
 
-### `voice_handler.go`（核心）
+### 配置方式
+
+| 字段 | YAML 配置项 | 环境变量（更高优先级） |
+|---|---|---|
+| API 地址 | `llm.url` | — |
+| API Key | `llm.api_key` | `LLM_API_KEY` |
+| 模型名 | `llm.model`（默认 `gpt-3.5-turbo`） | — |
+| System Prompt | `llm.system_prompt` | — |
+| 超时 | `llm.timeout`（默认 30s） | — |
+
+配置示例见 [`config.yaml`](./config.yaml)。未配置 LLM 时，健康检查显示 `llm: disabled`，`/v1/voice` 退化为纯 ASR 透传模式。
+
+### 核心流程（`voice.go`）
 
 ```go
-package handler
-
-import (
-    "context"
-    "encoding/base64"
-    "encoding/json"
-    "log"
-    "net/http"
-    "sync"
-    "time"
-
-    "github.com/gorilla/websocket"
-)
-
-// === 配置 ===
-const (
-    asrWSURL = "ws://127.0.0.1:9100/v1/asr/stream"
-    ttsURL   = "http://127.0.0.1:9200/v1/tts/synthesize"
-)
-
-var upgrader = websocket.Upgrader{
-    ReadBufferSize:  32 * 1024,
-    WriteBufferSize: 32 * 1024,
-    CheckOrigin:     func(r *http.Request) bool { return true }, // 生产收紧
-}
-
-// === 协议事件 ===
-type evt struct {
-    Type    string `json:"type"`
-    Text    string `json:"text,omitempty"`
-    Format  string `json:"format,omitempty"`
-    Data    string `json:"data,omitempty"`     // base64
-    Device  string `json:"device,omitempty"`
-    Action  string `json:"action,omitempty"`
-    Message string `json:"message,omitempty"`
-}
-
-// === 入口：家具端连这里 ===
-func HandleVoice(w http.ResponseWriter, r *http.Request) {
-    // 0. 设备鉴权（query 参数：?device_id=&token=）
-    deviceID, err := authDeviceFromQuery(r)
-    if err != nil {
-        http.Error(w, "unauthorized", http.StatusUnauthorized)
-        return
-    }
-
-    cli, err := upgrader.Upgrade(w, r, nil)
-    if err != nil {
-        return
-    }
-    defer cli.Close()
-
-    ctx, cancel := context.WithCancel(r.Context())
-    defer cancel()
-
-    // 1. 拨号到 ASR
-    asr, _, err := websocket.DefaultDialer.DialContext(ctx, asrWSURL, nil)
-    if err != nil {
-        sendEvt(cli, evt{Type: "error", Message: "asr_unreachable"})
-        return
-    }
-    defer asr.Close()
-
-    // 2. 写家具端 WS 加锁（多 goroutine 都会写）
-    var sendMu sync.Mutex
-    sendToFurniture := func(e evt) {
-        sendMu.Lock()
-        defer sendMu.Unlock()
-        _ = cli.WriteJSON(e)
-    }
-
-    var finalText string
-    finalCh := make(chan string, 1)
-
-    // 2a. ASR -> 家具端（事件改写）
-    go func() {
-        defer cancel()
-        for {
-            mt, data, err := asr.ReadMessage()
-            if err != nil {
-                return
-            }
-            if mt != websocket.TextMessage {
-                continue
-            }
-            var e evt
-            if err := json.Unmarshal(data, &e); err != nil {
-                continue
-            }
-            switch e.Type {
-            case "ready":
-                // 吞掉
-            case "partial":
-                sendToFurniture(evt{Type: "asr_partial", Text: e.Text})
-            case "final":
-                finalText = e.Text
-                sendToFurniture(evt{Type: "asr_final", Text: e.Text})
-            case "eos":
-                select {
-                case finalCh <- finalText:
-                default:
-                }
-                return
-            case "error":
-                sendToFurniture(evt{Type: "error", Message: e.Message})
-                return
-            }
-        }
-    }()
-
-    // 2b. 家具端 -> ASR（直接透传，含 text 控制帧与 binary 音频帧）
-    go func() {
-        defer cancel()
-        for {
-            mt, data, err := cli.ReadMessage()
-            if err != nil {
-                return
-            }
-            if err := asr.WriteMessage(mt, data); err != nil {
-                return
-            }
-        }
-    }()
-
-    // 3. 等 final 或断开
-    var text string
-    select {
-    case text = <-finalCh:
-    case <-ctx.Done():
-        return
-    case <-time.After(60 * time.Second):
-        sendToFurniture(evt{Type: "error", Message: "asr_timeout"})
-        return
-    }
-    if text == "" {
-        sendToFurniture(evt{Type: "error", Message: "empty_text"})
-        return
-    }
-
-    // 4. 跑 LLM → 设备指令 → TTS（TODO：本轮先打桩）
-    go runDialogPipeline(ctx, deviceID, text, sendToFurniture)
-
-    // 5. 让 pipeline 把事件推完再退出
-    <-ctx.Done()
-}
-
-// === LLM + 设备 + TTS（TODO：占位）===
-func runDialogPipeline(
-    ctx context.Context, deviceID string, text string,
-    send func(evt),
-) {
-    // TODO 4.1 调云端 LLM
-    reply, commands, err := callCloudLLM(ctx, deviceID, text)
-    if err != nil {
-        send(evt{Type: "error", Message: "llm_failed: " + err.Error()})
-        return
-    }
-    if reply != "" {
-        send(evt{Type: "reply", Text: reply})
-    }
-
-    // TODO 4.2 派发设备指令到 MQTT
-    for _, cmd := range commands {
-        if err := publishMQTT(cmd); err != nil {
-            log.Printf("mqtt publish err: %v", err)
-            continue
-        }
-        send(evt{Type: "device_done", Device: cmd.Device, Action: cmd.Action})
-    }
-
-    // TODO 4.3 TTS
-    if reply != "" {
-        wav, err := callTTS(ctx, reply)
-        if err == nil {
-            send(evt{
-                Type:   "tts_audio",
-                Format: "wav",
-                Data:   base64.StdEncoding.EncodeToString(wav),
-            })
-        }
-    }
-}
-
-// ---- helpers (TODO) ----
-func authDeviceFromQuery(r *http.Request) (string, error) {
-    // 从 ?device_id=&token= 解析并校验设备凭证
-    return r.URL.Query().Get("device_id"), nil
-}
-func sendEvt(c *websocket.Conn, e evt) { _ = c.WriteJSON(e) }
-
-type DeviceCommand struct{ Device, Action string }
-
-func callCloudLLM(ctx context.Context, deviceID, text string) (string, []DeviceCommand, error) {
-    // TODO: 调通义/豆包/DeepSeek，按 JSON Schema 解析 reply + commands
-    return "", nil, nil
-}
-func publishMQTT(cmd DeviceCommand) error                       { return nil }
-func callTTS(ctx context.Context, text string) ([]byte, error)  { return nil, nil }
-```
-
-### `main.go`
-
-```go
-package main
-
-import (
-    "log"
-    "net/http"
-
-    "your/module/handler"
-)
-
-func main() {
-    http.HandleFunc("/v1/voice", handler.HandleVoice)
-    // 其他路由：登录、设备、场景、客户端 WS ...
-    log.Println("server listening on :8080")
-    log.Fatal(http.ListenAndServe(":8080", nil))
-}
+// VoiceHandler.ServeHTTP(w, r)
+//   1. 升级家具端 WS 连接
+//   2. 拨号到 ASR WS（ws://127.0.0.1:9100/v1/asr/stream）
+//   goroutine A: 家具端 → ASR（透传 start / PCM / end / ping）
+//   goroutine B: ASR → 家具端（翻译事件类型 + 转发）
+//     · 收到 asr_final → 启动 goroutine C 异步调用 LLM
+//   goroutine C: 调 LLM API → 写 llm_result / llm_error 回家具端
+//   写 clientConn 用 sync.Mutex 串行化（goroutine B + C 都可能写）
 ```
 
 ---
@@ -498,9 +321,9 @@ server/
 - [x] 搭基础脚手架（`cmd/server` + `internal/handler`，标准库 `net/http`）
 - [x] 实现 `/v1/voice` 透传（M1：双向透传 + 事件改名，不含 LLM/TTS/MQTT）
 - [x] 用模拟脚本跑通"家具端 → Go Server → ASR"（四层验证法全绿）
+- [x] **接入云端 LLM 客户端（config.yaml + $env:LLM_API_KEY）**（M2）
 - [ ] 实现客户端 JWT 鉴权与登录
 - [ ] 实现设备 Token 鉴权
-- [ ] 接入云端 LLM 客户端（Prompt 模板 + JSON Schema 校验）
 - [ ] 接入 MQTT（推荐 `eclipse/paho.mqtt.golang`）
 - [ ] 接入 TTS HTTP 客户端
 - [ ] 健康巡检：定时打 ASR/TTS `/v1/health`，掉线后家具端 fallback

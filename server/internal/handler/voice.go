@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,32 +15,37 @@ import (
 
 // VoiceHandler 实现家具端 ↔ Go Server WebSocket（/v1/voice）。
 //
-// M1 行为：纯透传到 ASR 模型 WS（默认 ws://127.0.0.1:9100/v1/asr/stream），
-// 把 ASR 的事件类型加上 asr_ 前缀（partial -> asr_partial, final -> asr_final）后回家具。
+// M2 行为：
+//   - 家具端 PCM → ASR 流式识别（同 M1，透传）
+//   - ASR partial/final → 翻译为 asr_partial/asr_final 回家具
+//   - asr_final 触发 → 异步调用大模型 API → llm_result 回家具
+//   - 家具端收到 llm_result 后可恢复语音检测（多轮对话）
 //
-// **单连接多段对话**（主流智能音箱的语音会话模型）：
-//   - 家具端在同一条 WS 上可以重复发送多组 start / [PCM...] / end，每一组触发 ASR 回
-//     一次 asr_final + eos；连接保持到家具端主动关闭为止。
-//   - 本 handler 不需要感知"段"，双向逐帧透传即可；段级语义由家具端（KWS + VAD）
-//     和 ASR 服务端共同维护。
+// 协议扩展（M2 新增）：
 //
-//   - 不做鉴权：device_id / token 仅记录日志；
-//   - 不做 LLM / TTS / MQTT：那些事件在 M2~M3 落地。
+//	服务端 → 客户端：
+//	  {"type":"llm_result","text":"..."}   ← 大模型回答
+//	  {"type":"llm_error","message":"..."} ← 大模型调用出错
 type VoiceHandler struct {
-	asrWSURL string
-	upgrader websocket.Upgrader
-	dialer   *websocket.Dialer
+	asrWSURL  string
+	llmConfig *LLMConfig
+	upgrader  websocket.Upgrader
+	dialer    *websocket.Dialer
 }
 
-// NewVoiceHandler 构造一个透传 handler。
-func NewVoiceHandler(asrWSURL string) *VoiceHandler {
+// NewVoiceHandler 构造 voice handler。
+func NewVoiceHandler(asrWSURL string, cfg *AppConfig) *VoiceHandler {
+	var llmCfg *LLMConfig
+	if cfg != nil {
+		llmCfg = &cfg.LLM
+	}
 	return &VoiceHandler{
-		asrWSURL: asrWSURL,
+		asrWSURL:  asrWSURL,
+		llmConfig: llmCfg,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  64 * 1024,
 			WriteBufferSize: 64 * 1024,
-			// 联调阶段允许任意来源
-			CheckOrigin: func(*http.Request) bool { return true },
+			CheckOrigin:     func(*http.Request) bool { return true },
 		},
 		dialer: &websocket.Dialer{
 			HandshakeTimeout: 10 * time.Second,
@@ -81,17 +87,27 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer asrConn.Close()
 	log.Info("asr connected", "asr", h.asrWSURL)
 
-	// 3) 双向转发
-	//   client -> asr：start / end / ping / 二进制 PCM 原样发
-	//   asr -> client：把 ready/partial/final/eos/error 翻译成 asr_* 后回客户端
+	// 3) 双向转发 + LLM 处理
 	stop := make(chan struct{})
 	var once sync.Once
 	closeStop := func() { once.Do(func() { close(stop) }) }
 
+	// 保护 clientConn 写入（ASR 回传 goroutine + LLM goroutine 可能同时写）
+	var writeMu sync.Mutex
+	safeWriteClient := func(v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return clientConn.WriteMessage(websocket.TextMessage, b)
+	}
+
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
-	// client -> asr
+	// ---------- client -> asr ----------
 	go func() {
 		defer wg.Done()
 		defer closeStop()
@@ -103,7 +119,6 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				} else {
 					log.Warn("client read err", "err", err)
 				}
-				// 通知 ASR 我们结束了
 				_ = asrConn.WriteControl(
 					websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client gone"),
@@ -112,9 +127,9 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// 拦截 ping，自己回 pong，不转发给 ASR（ASR 协议没定义 ping）
+			// 拦截 ping，自己回 pong
 			if mt == websocket.TextMessage && isPing(data) {
-				_ = writeJSON(clientConn, map[string]any{"type": "pong"})
+				_ = safeWriteClient(map[string]any{"type": "pong"})
 				continue
 			}
 
@@ -125,7 +140,7 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// asr -> client
+	// ---------- asr -> client ----------
 	go func() {
 		defer wg.Done()
 		defer closeStop()
@@ -140,34 +155,147 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// 二进制理论上 ASR 不会回，保险起见原样转
+			// 二进制直接透传
 			if mt != websocket.TextMessage {
-				if err := clientConn.WriteMessage(mt, data); err != nil {
-					log.Warn("client write(bin) err", "err", err)
+				writeMu.Lock()
+				werr := clientConn.WriteMessage(mt, data)
+				writeMu.Unlock()
+				if werr != nil {
+					log.Warn("client write(bin) err", "err", werr)
 					return
 				}
 				continue
 			}
 
+			// 翻译 ASR 事件并发送
 			out := translateASREvent(data)
-			if err := clientConn.WriteMessage(websocket.TextMessage, out); err != nil {
-				log.Warn("client write err", "err", err)
+			writeMu.Lock()
+			werr := clientConn.WriteMessage(websocket.TextMessage, out)
+			writeMu.Unlock()
+			if werr != nil {
+				log.Warn("client write err", "err", werr)
 				return
+			}
+
+			// M2: 收到 asr_final → 异步调用大模型（空文本则直接放行）
+			if h.llmConfig != nil && h.llmConfig.URL != "" {
+				var ev map[string]any
+				if err := json.Unmarshal(out, &ev); err == nil {
+					if t, _ := ev["type"].(string); t == "asr_final" {
+						if text, ok := ev["text"].(string); ok && text != "" {
+							go h.handleLLMResult(clientConn, text, &writeMu, log)
+						} else {
+							log.Info("asr_final empty text, skip llm")
+							writeMu.Lock()
+							_ = writeJSON(clientConn, map[string]any{
+								"type": "llm_result",
+								"text": "",
+							})
+							writeMu.Unlock()
+						}
+					}
+				}
 			}
 		}
 	}()
 
 	// 等任意一边结束
 	<-stop
-	// 主动关闭两端，让另一方的 ReadMessage 返回
 	_ = clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	_ = asrConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	wg.Wait()
 	log.Info("session done")
 }
 
+// handleLLMResult 调用大模型 API，将结果通过 ws 送回客户端。
+func (h *VoiceHandler) handleLLMResult(conn *websocket.Conn, text string, writeMu *sync.Mutex, log *slog.Logger) {
+	t0 := time.Now()
+	reply, err := h.callLLM(text)
+	cost := time.Since(t0).Milliseconds()
+
+	if err != nil {
+		log.Warn("llm call failed", "err", err, "cost_ms", cost)
+		writeMu.Lock()
+		_ = writeJSON(conn, map[string]any{
+			"type":    "llm_error",
+			"message": err.Error(),
+		})
+		writeMu.Unlock()
+		return
+	}
+
+	log.Info("llm ok", "cost_ms", cost, "reply_len", len(reply))
+	writeMu.Lock()
+	_ = writeJSON(conn, map[string]any{
+		"type": "llm_result",
+		"text": reply,
+	})
+	writeMu.Unlock()
+}
+
+// callLLM 调用兼容 OpenAI Chat Completions 格式的大模型 API。
+func (h *VoiceHandler) callLLM(text string) (string, error) {
+	cfg := h.llmConfig
+
+	// 组装 messages
+	messages := []map[string]string{}
+	if cfg.SystemPrompt != "" {
+		messages = append(messages, map[string]string{"role": "system", "content": cfg.SystemPrompt})
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": text})
+
+	body := map[string]any{
+		"model":    cfg.Model,
+		"messages": messages,
+		"stream":   false,
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeout)*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if result.Error != nil && result.Error.Message != "" {
+		return "", errors.New("llm api error: " + result.Error.Message)
+	}
+
+	if len(result.Choices) > 0 {
+		return result.Choices[0].Message.Content, nil
+	}
+	return "", errors.New("llm response has no choices")
+}
+
 // translateASREvent 把 ASR 的事件 type 映射成家具协议（partial -> asr_partial, final -> asr_final）。
-// 解析失败 / 不认识的事件原样透传，不破坏未来扩展。
 func translateASREvent(raw []byte) []byte {
 	var ev map[string]any
 	if err := json.Unmarshal(raw, &ev); err != nil {

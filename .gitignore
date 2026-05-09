@@ -85,6 +85,18 @@ server/*.test
 server/*.out
 vendor/
 
+# Go 性能分析 / 测试覆盖率
+*.prof
+*.pprof
+*.trace
+server/coverage.out
+server/cpu.out
+server/mem.out
+
+# Go 构建缓存（go build 生成的临时目录）
+server/cmd/server/server
+server/cmd/server/server.exe
+
 # ============================================================
 #   Android / Kotlin（client/）
 # ============================================================
