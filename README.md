@@ -14,23 +14,42 @@
 - **模型服务**：仅提供本地 ASR（FunASR paraformer-zh-streaming）和 TTS（Piper）推理能力，由 Server 按需调用。
 
 ```
-   ┌──────────────────┐                              ┌──────────────────────┐
-   │  Android 客户端   │   HTTP / WebSocket           │   Go 服务器（中枢）    │   HTTP / WebSocket   ┌──────────────────┐
-   │   (client/)      │ ◀───────────────────────────▶│     (server/)        │ ◀──────────────────▶│  模型服务          │
-   └──────────────────┘  登录/对话/状态/场景           └──┬──────┬──────┬────┘   ASR · TTS          │   (model/)        │
-                                                         │      │      │                            │   ASR :9100       │
-                                                         │      │      │  HTTPS                      │   TTS :9200       │
-                                               WebSocket │      │  MQTT ├──────────────┐             └──────────────────┘
-                                               音频上下行 │      │ 设备  │              ▼
-                                                         │      │ 控制  │   ┌─────────────────────┐
-                                                         ▼      ▼      │   │   云端 LLM API      │
-                                                  ┌─────────────────┐  │   │  (config.yaml 配置)  │
-                                                  │ 家具端（模拟器/    │  │   │  $env:LLM_API_KEY   │
-                                                  │  硬件）           │  │   └─────────────────────┘
-                                                  │ (furniture/)     │  │
-                                                  │ 麦克风+KWS+VAD+  │  │
-                                                  │ 扬声器+设备       │  │
-                                                  └─────────────────┘  │
+                         ┌──────────────────────────────────────────────────┐
+                         │              Go 服务器（中枢）                    │
+                         │               (server/)                          │
+                         │                                                  │
+  ┌──────────────────┐   │   ┌──────────┐  ┌───────────┐  ┌──────────────┐  │
+  │  Android 客户端   │   │  │ API 网关  │  │ 会话编排   │  │ LLM 客户端   │  │
+  │  (client/)       │◀──│──│ REST/WS   │──│ ASR+LLM   │──│ config.yaml  │──│── HTTPS ──▶ 云端 LLM API
+  │  Kotlin+Compose  │   │  └──────────┘  │ TTS 编排    │  │ LLM_API_KEY  │  │               (通义/智谱等)
+  └──────────────────┘   │                └─────┬───────┘  └──────────────┘  │
+    登录/设备/状态        │                      │                            │
+                         │                      │ WS 透传                    │
+                         │                      ▼                            │
+                         │              ┌──────────────┐     ┌─────────────┐ │
+                         │              │  ASR 客户端   │────▶│  ASR 服务  │ │
+                         │              │  (WS 流式)   │     │  :9100      │ │
+                         │              └──────────────┘     └─────────────┘ │
+                         │                                                   │
+                         │              ┌──────────────┐     ┌─────────────┐ │
+                         │              │  TTS 客户端   │────▶│  TTS 服务  │ │
+                         │              │  (HTTP)      │     │  :9200      │ │
+                         │              └──────────────┘     └─────────────┘ │
+                         │                        (M3)                       │
+                         │              ┌──────────────┐                     │
+                         │              │  MQTT Bridge  │────▶ 家具端（控制  │
+                         │              │  (M3)         │                    │
+                         │              └──────────────┘                     │
+                         └──────────────────────┬────────────────────────────┘
+                                                │ WS /v1/voice (音频上行 + llm_result 下行)
+                                                ▼
+                              ┌────────────────────────────────────┐
+                              │        家具端（小菲）               │
+                              │        (furniture/)                │
+                              │  麦克风 → KWS → VAD → WS 上行     │
+                              │  VAD 发 end → 暂停 → 收到回复 → 恢复 │
+                              │  扬声器(TTS) / 设备控制(MQTT)      │
+                              └────────────────────────────────────┘
 ```
 
 ### 端侧（小菲）的职责链（重要）
@@ -79,14 +98,30 @@ System/
 ├── README.md                                       # 本文件，项目总览
 ├── 《软件工程》课程实践考核要求说明.pdf                # 课程官方要求
 ├── .gitignore                                      # 忽略模型权重 / wheel / 构建产物 / 生成音频
+├── .gitattributes                                  # 跨平台换行符统一配置
 │
 ├── docs/                                           # 项目文档
 │   ├── 01-项目策划文档.md                           # 对应考核 2.4
 │   ├── 02-需求分析文档.md                           # 对应考核 2.1
 │   └── 03-软件设计文档.md                           # 对应考核 2.2
 │
-├── client/                                         # Android 客户端（Kotlin）
-│   └── README.md
+├── client/                                         # Android 客户端（Kotlin + Compose）
+│   ├── README.md
+│   ├── settings.gradle.kts                         # Gradle 项目设置
+│   ├── build.gradle.kts                            # 根构建脚本
+│   ├── gradle.properties                           # Gradle 属性
+│   ├── gradle/wrapper/gradle-wrapper.properties    # Gradle 8.7
+│   └── app/                                        # 📱 主应用模块
+│       ├── build.gradle.kts                        # 构建配置（Compose + OkHttp）
+│       ├── proguard-rules.pro
+│       └── src/main/
+│           ├── AndroidManifest.xml
+│           ├── res/values/{strings,themes}.xml
+│           └── java/com/shva/client/
+│               ├── ShvaApplication.kt              # Application 入口
+│               ├── MainActivity.kt                 # 主界面（消息列表）
+│               ├── ui/theme/Theme.kt               # Material 3 主题
+│               └── websocket/ServerWebSocket.kt    # WS 连接管理（自动重连）
 │
 ├── server/                                         # Go 服务器（中枢：透传/LLM/TTS/MQTT/CRUD）
 │   ├── README.md
@@ -96,22 +131,26 @@ System/
 │   └── internal/handler/                           # HTTP / WebSocket 处理器
 │       ├── config.go                               # AppConfig / LLMConfig 解析（支持环境变量）
 │       ├── health.go                               # /v1/health（含 LLM 状态）
-│       └── voice.go                                # /v1/voice 家具端音频上下行 + LLM 异步调用
+│       └── voice.go                                # /v1/voice 音频上下行 + LLM 异步调用
 │
 ├── furniture/                                      # 家具端"小菲"（KWS + VAD + WS 长连接）
 │   ├── README.md                                   # 家具 ↔ server WS 协议契约
-│   ├── requirements.txt                            # websockets / webrtcvad / soundfile / numpy
-│   └── mock_furniture.py                           # PC 端模拟器：wav 当虚拟麦克风，端侧自动断句
+│   ├── requirements.txt                            # websockets / webrtcvad / numpy
+│   └── mock_furniture.py                           # PC 端模拟器：VAD 断句 + LLM 多轮对话
 │
 └── model/                                          # 模型服务（ASR + TTS 推理）
-    ├── README.md                                   # 模块详细说明
-    ├── setup_gguf.py                               # 一键下载推理依赖到 gguf_pkg/
+    ├── README.md
+    ├── setup_gguf.py                               # 一键下载推理依赖
     ├── download_model.py                           # 一键下载 ASR / TTS 模型
     ├── start_all.ps1                               # 一键启动 ASR (:9100) + TTS (:9200)
     ├── test_stream_e2e.py                          # TTS → 流式 ASR 端到端联调
-    ├── asr_server/                                 # FunASR ASR 服务（流式 + 整段，支持单 WS 多轮）
-    │   └── scripts/test_stream.py                  # 老版单段 PTT 调试脚本（仍可用）
-    └── tts_server/                                 # Piper TTS 服务
+    ├── asr_server/                                 # FunASR ASR 服务（流式 WS + HTTP）
+    │   ├── app.py
+    │   ├── requirements.txt
+    │   └── scripts/test_stream.py
+    └── tts_server/                                 # Piper TTS 服务（HTTP）
+        ├── app.py
+        └── requirements.txt
 ```
 
 > 模型权重（`*.onnx` / `*.gguf` / `*.pt` 等）、wheel 包、生成音频已通过 `.gitignore` 排除，**不入库**。
@@ -186,9 +225,38 @@ curl http://127.0.0.1:8080/v1/health
 python furniture/mock_furniture.py --server "ws://127.0.0.1:8080/v1/voice?device_id=dev1&token=t1"
 ```
 
-### 5. 运行 Android 客户端
+### 5. 编译运行 Android 客户端
 
-详见 [`client/README.md`](./client/README.md)。
+**前置条件**：安装 [Android Studio](https://developer.android.com/studio)（Hedgehog 2023.1+），模拟器推荐 `Pixel 6 API 33+`。
+
+**打开项目**：用 Android Studio 打开 `client/` 目录，首次打开自动下载 Gradle 8.7 + 依赖（需联网）。
+
+**编译 APK**：
+
+```powershell
+cd client
+./gradlew assembleDebug
+```
+
+APK 输出：`app/build/outputs/apk/debug/app-debug.apk`
+
+**安装到模拟器 / 真机**：
+
+```powershell
+# 确保模拟器已启动或真机已 USB 连接
+./gradlew installDebug
+```
+
+连接后顶部状态栏显示 **🟢 已连接**，底部列表中会显示服务端推送的消息。
+
+**服务端地址配置**：编辑 `client/app/build.gradle.kts`，修改 `SERVER_HOST` 和 `SERVER_PORT` 字段后重新编译：
+
+| 运行方式 | `SERVER_HOST` 值 |
+|---|---|
+| Android 模拟器 → 本机 | `10.0.2.2`（默认，自动映射宿主机 localhost） |
+| 真机 → 局域网服务器 | 填写局域网 IP，如 `"192.168.1.100"` |
+
+更多细节详见 [`client/README.md`](./client/README.md)。
 
 ## 文档索引
 
