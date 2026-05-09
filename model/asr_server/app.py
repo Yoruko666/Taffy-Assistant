@@ -20,7 +20,7 @@
         {"type":"error","message":"..."}      ← 错误信息
     语义要点：
         - ASR cache 随每段独立：每次 end/start 之间重置，避免相邻两句相互污染。
-        - 一条 WS 可承载多段语音（像小度/小爱：WS 长连接 + 端侧 VAD 切句）。
+        - 一条 WS 可承载多段语音（主流智能音箱模式：WS 长连接 + 端侧 VAD 切句）。
 
 环境变量：
     ASR_MODEL_DIR        ASR 流式模型目录（默认 ./models/paraformer-zh-streaming）

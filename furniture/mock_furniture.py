@@ -1,10 +1,10 @@
-"""Mock 家具端（PC 端模拟器） —— "像小度一样"的语音交互前端。
+"""Mock 家具端（PC 端模拟器） —— 家具助手"小菲"的 PC 虚拟实现。
 
 本脚本模拟一台带麦克风的智能家居设备（音箱 / 屏幕设备），跑在普通 PC 上，
 **不需要真实麦克风**。音源由一个或多个 wav 文件拼成"虚拟音频流"，
 在文件之间插入静音段，模拟用户说一句、停一会、再说一句的真实节奏。
 
-整体行为复刻 *小度 / 小爱 / Alexa* 的端侧链路：
+整体行为复刻主流智能音箱的端侧链路：
 
     [虚拟麦克风 wav 流]
             │
@@ -203,7 +203,7 @@ class WakeWord(ABC):
 class AlwaysOnWakeWord(WakeWord):
     """默认实现：永远视为已唤醒（M2 阶段 = 进程启动即可说话）。
 
-    对比真小度：相当于唤醒后没有超时，一直处于会话窗口。
+    相当于小菲唤醒后没有超时，一直处于会话窗口。
     """
 
     def feed(self, frame_pcm16: bytes) -> bool:  # noqa: ARG002
@@ -518,7 +518,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lead-ms", type=int, default=500, help="流开头的静音长度（ms），默认 500")
     # 模式
     p.add_argument("--mode", choices=["vad", "ptt"], default="vad",
-                   help="vad=自动断句（默认，像小度）；ptt=按住说话整段送（兼容老脚本）")
+                   help="vad=自动断句（默认，主流智能音箱模式）；ptt=按住说话整段送（兼容老脚本）")
     # VAD 参数
     p.add_argument("--vad-level", type=int, default=2, choices=[0, 1, 2, 3],
                    help="webrtcvad 灵敏度，0 最宽松 / 3 最严格，默认 2")

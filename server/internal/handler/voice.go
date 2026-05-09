@@ -17,7 +17,7 @@ import (
 // M1 行为：纯透传到 ASR 模型 WS（默认 ws://127.0.0.1:9100/v1/asr/stream），
 // 把 ASR 的事件类型加上 asr_ 前缀（partial -> asr_partial, final -> asr_final）后回家具。
 //
-// **单连接多段对话**（类小度/小爱的语音会话模型）：
+// **单连接多段对话**（主流智能音箱的语音会话模型）：
 //   - 家具端在同一条 WS 上可以重复发送多组 start / [PCM...] / end，每一组触发 ASR 回
 //     一次 asr_final + eos；连接保持到家具端主动关闭为止。
 //   - 本 handler 不需要感知"段"，双向逐帧透传即可；段级语义由家具端（KWS + VAD）
