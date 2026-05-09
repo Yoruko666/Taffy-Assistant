@@ -101,6 +101,7 @@ server/cmd/server/server.exe
 #   Android / Kotlin（client/）
 # ============================================================
 client/build/
+client/app/build/
 client/.gradle/
 client/local.properties
 client/.idea/

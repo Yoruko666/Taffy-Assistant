@@ -1,100 +1,140 @@
-# Client（控制 / 管理面板）
+# SHVA Android 客户端
 
-> SHVA 客户端定位为**控制与管理面板**，**不**承担语音输入。
-> 计划技术栈：Android（Kotlin + Jetpack Compose）；Web 演示版可选。
-> 当前为占位目录，等服务端核心链路（Server ↔ ASR）打通后再启动客户端开发。
+> Android 端控制/管理面板，使用 **Kotlin + Jetpack Compose (Material 3)**。
 
 ---
 
-## 重要：客户端 ≠ 音频输入端
-
-本系统的语音输入由**家具端**（即家具助手"小菲"——带麦克风的智能音箱式硬件）承担：
+## 项目结构
 
 ```
-家具端 ──WS音频流──> Go Server ──WS音频流──> ASR Model
-                         │
-                         └─> 云端 LLM ─> MQTT 下发设备 / TTS 回播家具端
+client/
+├── settings.gradle.kts              # Gradle 项目设置（模块声明）
+├── build.gradle.kts                 # 根构建脚本（插件声明）
+├── gradle.properties                # Gradle 属性（AndroidX、JVM args）
+├── gradle/
+│   └── wrapper/
+│       └── gradle-wrapper.properties    # Gradle 8.7 发行版
+│
+├── README.md                        # 本文件
+│
+└── app/                             # 📱 主应用模块
+    ├── build.gradle.kts             # 构建配置（Compose、OkHttp、依赖）
+    ├── proguard-rules.pro           # 混淆规则
+    │
+    └── src/main/
+        ├── AndroidManifest.xml      # 清单：INTERNET 权限 + Activity 注册
+        ├── res/
+        │   └── values/
+        │       ├── strings.xml      # 字符串资源
+        │       └── themes.xml       # 基础主题（Compose 全权接管 UI）
+        │
+        └── java/com/shva/client/
+            ├── ShvaApplication.kt           # Application 入口
+            ├── MainActivity.kt              # 主界面（消息列表 + 连接状态）
+            ├── ui/
+            │   └── theme/
+            │       └── Theme.kt             # Material 3 亮/暗主题
+            └── websocket/
+                └── ServerWebSocket.kt       # WebSocket 连接管理（自动重连）
 ```
 
-客户端**只**做下面这些事，**不**录音、**不**上传音频：
+## 前置要求
 
-| 功能 | 说明 |
+| 工具 | 版本 | 说明 |
+|---|---|---|
+| Android Studio | Hedgehog (2023.1+) 或更高 | 推荐最新稳定版 |
+| JDK | 17 | Android Studio 内置 JDK 即满足 |
+| Gradle | 8.7 | 由 wrapper 自动下载，无需预装 |
+| Go Server | 运行中 | Android 客户端需连接 Go Server (:8080) |
+
+## 编译 & 运行
+
+### 1. 打开项目
+
+用 Android Studio 打开 `client/` 目录（不是 `client/app/`）：
+
+```bash
+# 命令行也可
+cd client
+code .          # 或直接 Android Studio → Open → 选择 client/
+```
+
+首次打开会自动下载 Gradle 8.7 + 依赖（需联网，约 2~5 分钟）。
+
+### 2. 编译 APK（命令行）
+
+```powershell
+cd client
+./gradlew assembleDebug
+```
+
+APK 输出路径：`app/build/outputs/apk/debug/app-debug.apk`
+
+### 3. 安装到设备
+
+**模拟器**（推荐 `Pixel 6 API 33` 或更高）：
+
+```powershell
+# Android Studio 中直接点 Run ▶ 按钮
+# 或命令行（需先启动模拟器）：
+./gradlew installDebug
+```
+
+**真机**：开启开发者选项 + USB 调试，连接后：
+
+```powershell
+./gradlew installDebug
+```
+
+### 4. 运行 Demo
+
+启动后会**自动连接**到 Go Server（默认 `ws://10.0.2.2:8080/v1/voice?device_id=android_client&token=t1`）。
+
+- **模拟器**：`10.0.2.2` 自动映射到宿主机 `localhost`，Go Server 在本机运行即可
+- **真机**：需将服务器 IP 改为局域网地址（通过 `BuildConfig.SERVER_HOST` 修改）
+
+连接成功后，顶部状态栏显示 **🟢 已连接**，底部显示收到的所有服务端推送消息（`asr_final`、`llm_result` 等）。
+
+### 服务端地址配置
+
+编辑 `app/build.gradle.kts`：
+
+```kotlin
+buildConfigField("String", "SERVER_HOST", "\"10.0.2.2\"")   // 模拟器→宿主机
+buildConfigField("int", "SERVER_PORT", "8080")
+```
+
+修改后重新编译生效。
+
+## 当前能力（M2）
+
+| 功能 | 状态 |
 |---|---|
-| 用户认证 | 登录 / 注册 / 登出（HTTPS） |
-| 设备管理 | 绑定 / 解绑 / 改名 / 分组（HTTPS） |
-| 状态查看 | 设备开关 / 亮度 / 温度 / 在线状态（HTTP + WebSocket 推送） |
-| 场景管理 | 场景定义、一键触发（HTTPS） |
-| 对话历史 | 浏览家具端语音交互的历史记录（HTTPS） |
-| 个人中心 | 资料、改密码、注销 |
+| WebSocket 连接 Go Server | ✅ 被动接收消息 |
+| 消息列表展示 | ✅ 按类型区分颜色 |
+| 自动重连 | ✅ 断线 3s 后重试 |
+| 连接状态指示 | ✅ 顶部状态栏 |
+| REST API 调用 | 📅 M3 |
+| 设备管理 UI | 📅 M3 |
+| 用户登录 | 📅 M3 |
 
----
-
-## 与服务端的连接
-
-客户端**只认 Go Server 一个地址**：
+## 网络架构
 
 ```
-Client ──HTTPS──> Go Server (REST，登录/设备/场景/对话历史)
-       ──WSS────> Go Server (实时状态推送：device.status / chat.message)
+Android App ──WSS──> Go Server :8080  (WebSocket 实时消息)
+            ──HTTPS─> Go Server :8080  (REST API，M3 接入)
 ```
 
-**没有**任何与 ASR / TTS / LLM Worker 的直连——所有 AI 能力都由 Go Server 在内部编排。
+客户端**只连接 Go Server 一个端点**，所有 AI 能力由 Go Server 内部编排。客户端不录音、不上传音频。
 
-### 主要 REST 端点
+## 依赖
 
-详见 `docs/03-软件设计文档.md` §4.2。客户端常用：
-
-| 模块 | 端点 |
+| 库 | 用途 |
 |---|---|
-| 认证 | `POST /api/v1/auth/register`、`POST /api/v1/auth/login` |
-| 设备 | `GET /api/v1/devices`、`POST /api/v1/devices/bind`、`GET /api/v1/devices/{id}/status` |
-| 会话 | `GET /api/v1/conversations`、`GET /api/v1/conversations/{id}/messages` |
-| 场景 | `GET /api/v1/scenes`、`POST /api/v1/scenes/{id}/trigger` |
-| 用户 | `GET /api/v1/users/me`、`PATCH /api/v1/users/me` |
-
-### WebSocket 推送（接收为主）
-
-```
-wss://<host>/ws?token=<jwt>
-```
-
-事件类型：
-
-| `type` | 说明 |
-|---|---|
-| `device.status` | 家具端状态变更（亮度/温度/开关等） |
-| `device.online` / `device.offline` | 设备上下线 |
-| `chat.message` | 家具端语音交互产生的新消息（让 App 跨端同步看到） |
-
----
-
-## 技术选型（建议）
-
-### Android 端（首选）
-
-- **语言 / UI**：Kotlin + Jetpack Compose（Material 3）
-- **网络**：Retrofit + OkHttp（含 WebSocket）
-- **架构**：MVVM + Repository
-- **本地存储**：DataStore（Token 等）
-- **不需要**：`AudioRecord`、`MediaRecorder`、PCM 处理 — 客户端不录音
-
-### Web 演示版（可选）
-
-仅做调试 / 演示用：
-
-- 框架：Vue 3 / React 任意，简单 SPA 即可
-- 主要展示：设备卡片网格、状态实时刷新、对话历史
-- **不需要**：`getUserMedia`、`AudioWorklet` — 客户端不录音
-
----
-
-## 后续工作
-
-- [ ] 选定 Android 单端还是 Android + Web 双端
-- [ ] 搭脚手架（Compose 项目模板）
-- [ ] UI 落地：登录 / 主页 / 设备详情 / 对话历史 / 场景 / 个人中心
-- [ ] 接入 Go Server REST + WebSocket（鉴权、状态推送）
-- [ ] 错误恢复：WS 断线自动重连、Token 过期刷新
+| `androidx.compose.material3` | Material 3 UI 组件 |
+| `androidx.compose.ui` | Compose 基础 UI |
+| `androidx.activity:activity-compose` | Activity + Compose 集成 |
+| `com.squareup.okhttp3:okhttp:4.12.0` | WebSocket 客户端（含自动心跳） |
 
 > 与家具端的语音链路设计见：
 > - 家具端协议：[`furniture/README.md`](../furniture/README.md)
