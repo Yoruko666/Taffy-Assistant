@@ -1,13 +1,10 @@
-# SHVA LLM 配置
-# 兼容 OpenAI Chat Completions 格式的 API
-llm:
-  # 大模型 API 地址（兼容 OpenAI 格式）
-  url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-  # API Key（可选，也可通过环境变量 LLM_API_KEY 设置，环境变量优先级更高）
-  api_key: "sk-your-api-key-here"
-  # 模型名称（可选，默认 gpt-3.5-turbo）
-  model: "GLM-4-Flash-250414"
-  # System Prompt（可选，默认空）
-  system_prompt: "你是一个智能家居助手，请用中文简短回答用户的问题。"
-  # 请求超时秒数（可选，默认 30）
-  timeout: 30
+# SHVA Server 配置
+# Server 是系统中枢：负责接收家具端 / 客户端的请求，转发给 Worker（大模型编排），
+# 自身不直接接 ASR / LLM / TTS。
+#
+# 大模型相关配置（API URL、API Key、模型名等）请在 ../worker/config.yaml 中配置。
+
+# Worker（大模型编排进程）地址
+worker:
+  # Worker 的 /v1/orchestrate WS 端点，Server 在每条家具会话中拨号到此 URL
+  ws_url: "ws://127.0.0.1:8090/v1/orchestrate"

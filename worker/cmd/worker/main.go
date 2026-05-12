@@ -1,22 +1,20 @@
-// Command server 是 SHVA 系统的 Go 中枢服务。
+// Command worker 是 SHVA 系统的大模型编排进程。
 //
-// 拆分后职责：
-//   - 接收家具端 / 客户端的接入（WS / REST）
-//   - 把家具端的语音 WS 会话整段转发给 Worker（大模型编排进程）
-//   - 未来：用户/设备 CRUD、对话历史落库、MQTT 设备控制
+// 职责：
+//   - 接受 Server 通过 WS 推送的语音流（/v1/orchestrate）
+//   - 调用本地 ASR（FunASR）做流式识别
+//   - asr_final 触发云端 LLM 调用
+//   - 未来扩展：TTS 合成、设备指令解析、并行设备控制
 //
-// Server **不直接** 接 ASR / LLM / TTS，相关配置已搬到 worker/config.yaml。
+// Worker 与 Server 之间用 WS 长连接复用一次会话，协议与"家具端 ↔ Server"完全相同。
 //
 // 启动：
 //
-//	# 默认监听 :8080，读取同目录 config.yaml
-//	go run ./cmd/server
+//	# 默认监听 :8090，读取同目录 config.yaml
+//	go run ./cmd/worker
 //
 //	# 自定义
-//	$env:PORT="8080"
-//	$env:CONFIG_PATH="config.yaml"
-//	$env:WORKER_WS_URL="ws://127.0.0.1:8090/v1/orchestrate"
-//	go run ./cmd/server
+//	$env:WORKER_PORT="8090"; $env:CONFIG_PATH="config.yaml"; go run ./cmd/worker
 package main
 
 import (
@@ -29,14 +27,14 @@ import (
 	"syscall"
 	"time"
 
-	"system/internal/handler"
+	"worker/internal/handler"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	port := getenv("PORT", "8080")
+	port := getenv("WORKER_PORT", "8090")
 	configPath := getenv("CONFIG_PATH", "config.yaml")
 
 	cfg, err := handler.LoadConfig(configPath)
@@ -44,13 +42,18 @@ func main() {
 		slog.Warn("config load failed, falling back to env-only defaults", "path", configPath, "err", err)
 		cfg = handler.DefaultConfig()
 	}
-	slog.Info("config ready", "worker_ws", cfg.Worker.WSURL)
+	slog.Info("config ready",
+		"asr_ws", cfg.ASR.WSURL,
+		"llm_url", cfg.LLM.URL,
+		"llm_model", cfg.LLM.Model,
+		"tts_url", cfg.TTS.URL,
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		handler.HealthWithConfig(w, r, cfg)
 	})
-	mux.Handle("/v1/voice", handler.NewVoiceHandler(cfg))
+	mux.Handle("/v1/orchestrate", handler.NewOrchestrateHandler(cfg))
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -59,7 +62,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("server starting", "addr", srv.Addr, "worker_ws", cfg.Worker.WSURL)
+		slog.Info("worker starting", "addr", srv.Addr, "asr_ws", cfg.ASR.WSURL)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("listen failed", "err", err)
 			os.Exit(1)

@@ -1,0 +1,23 @@
+# SHVA Worker 配置
+# 大模型编排进程：负责 ASR / LLM / TTS 等模型能力的调度，由 Server 通过 WS 调用。
+
+# ASR 模型 WS 地址（FunASR paraformer-zh-streaming）
+asr:
+  ws_url: "ws://127.0.0.1:9100/v1/asr/stream"
+
+# 大模型 API 配置（兼容 OpenAI Chat Completions 格式）
+llm:
+  # 大模型 API 地址
+  url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  # API Key（可选，也可通过环境变量 LLM_API_KEY 设置，环境变量优先级更高）
+  api_key: "sk-your-api-key-here"
+  # 模型名称（可选，默认 gpt-3.5-turbo）
+  model: "GLM-4-Flash-250414"
+  # System Prompt（可选，默认空）
+  system_prompt: "你是一个智能家居助手，请用中文简短回答用户的问题。"
+  # 请求超时秒数（可选，默认 30）
+  timeout: 30
+
+# TTS 模型 HTTP 地址（M3 接入 Piper）
+tts:
+  url: "http://127.0.0.1:9200/v1/tts/synthesize"

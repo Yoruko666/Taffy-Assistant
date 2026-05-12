@@ -1,47 +1,45 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// VoiceHandler 实现家具端 ↔ Go Server WebSocket（/v1/voice）。
+// VoiceHandler 实现家具端 ↔ Server WebSocket（/v1/voice）。
 //
-// M2 行为：
-//   - 家具端 PCM → ASR 流式识别（同 M1，透传）
-//   - ASR partial/final → 翻译为 asr_partial/asr_final 回家具
-//   - asr_final 触发 → 异步调用大模型 API → llm_result 回家具
-//   - 家具端收到 llm_result 后可恢复语音检测（多轮对话）
+// 拆分后职责：
+//   - 接受家具端连接，做设备鉴权（device_id / token，M2 暂未启用）
+//   - 把家具端整条 WS 会话原样转发给 Worker（/v1/orchestrate）
+//   - 把 Worker 的响应原样回传给家具端
+//   - 记录会话日志（未来：写入 MySQL/Redis 的对话历史、设备状态等）
 //
-// 协议扩展（M2 新增）：
-//
-//	服务端 → 客户端：
-//	  {"type":"llm_result","text":"..."}   ← 大模型回答
-//	  {"type":"llm_error","message":"..."} ← 大模型调用出错
+// Server 不再做以下事情（已迁移到 Worker）：
+//   - 直接对接 ASR
+//   - 翻译 ASR 事件类型
+//   - 调用云端 LLM
+//   - 合成 TTS
 type VoiceHandler struct {
-	asrWSURL  string
-	llmConfig *LLMConfig
-	upgrader  websocket.Upgrader
-	dialer    *websocket.Dialer
+	workerWSURL string
+	upgrader    websocket.Upgrader
+	dialer      *websocket.Dialer
 }
 
-// NewVoiceHandler 构造 voice handler。
-func NewVoiceHandler(asrWSURL string, cfg *AppConfig) *VoiceHandler {
-	var llmCfg *LLMConfig
+// NewVoiceHandler 构造 voice handler，内部拨号到 worker。
+func NewVoiceHandler(cfg *AppConfig) *VoiceHandler {
+	workerURL := ""
 	if cfg != nil {
-		llmCfg = &cfg.LLM
+		workerURL = cfg.Worker.WSURL
 	}
 	return &VoiceHandler{
-		asrWSURL:  asrWSURL,
-		llmConfig: llmCfg,
+		workerWSURL: workerURL,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  64 * 1024,
 			WriteBufferSize: 64 * 1024,
@@ -63,6 +61,8 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = log.With("token_len", len(token))
 	}
 
+	// TODO(M3)：在此处校验 device_id / token，未通过直接 401 拒绝。
+
 	// 1) 升级家具端连接
 	clientConn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -72,42 +72,53 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 	log.Info("client connected")
 
-	// 2) 拨号到 ASR
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	asrConn, _, err := h.dialer.DialContext(ctx, h.asrWSURL, nil)
-	if err != nil {
-		log.Error("dial asr failed", "asr", h.asrWSURL, "err", err)
+	if h.workerWSURL == "" {
+		log.Error("worker ws url not configured")
 		_ = writeJSON(clientConn, map[string]any{
 			"type":    "error",
-			"message": "asr backend unreachable",
+			"message": "worker not configured",
 		})
 		return
 	}
-	defer asrConn.Close()
-	log.Info("asr connected", "asr", h.asrWSURL)
 
-	// 3) 双向转发 + LLM 处理
+	// 2) 拨号到 worker，把家具端的 device_id / session_id 通过 query 透传过去
+	workerURL, err := buildWorkerURL(h.workerWSURL, deviceID)
+	if err != nil {
+		log.Error("build worker url failed", "err", err)
+		_ = writeJSON(clientConn, map[string]any{
+			"type":    "error",
+			"message": "worker url invalid",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	workerConn, _, err := h.dialer.DialContext(ctx, workerURL, nil)
+	if err != nil {
+		log.Error("dial worker failed", "worker", workerURL, "err", err)
+		_ = writeJSON(clientConn, map[string]any{
+			"type":    "error",
+			"message": "worker backend unreachable",
+		})
+		return
+	}
+	defer workerConn.Close()
+	log.Info("worker connected", "worker", workerURL)
+
+	// 3) 双向纯透传
 	stop := make(chan struct{})
 	var once sync.Once
 	closeStop := func() { once.Do(func() { close(stop) }) }
 
-	// 保护 clientConn 写入（ASR 回传 goroutine + LLM goroutine 可能同时写）
-	var writeMu sync.Mutex
-	safeWriteClient := func(v any) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		b, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		return clientConn.WriteMessage(websocket.TextMessage, b)
-	}
+	// 写 clientConn 用 Mutex 保护（虽然当前只有一个 goroutine 写，
+	// 但 buildWorkerURL/连接错误等路径也可能并发写，沿用稳妥实现）。
+	var clientWriteMu sync.Mutex
 
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
-	// ---------- client -> asr ----------
+	// ---------- client -> worker ----------
 	go func() {
 		defer wg.Done()
 		defer closeStop()
@@ -119,210 +130,93 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				} else {
 					log.Warn("client read err", "err", err)
 				}
-				_ = asrConn.WriteControl(
+				_ = workerConn.WriteControl(
 					websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client gone"),
 					time.Now().Add(time.Second),
 				)
 				return
 			}
-
-			// 拦截 ping，自己回 pong
-			if mt == websocket.TextMessage && isPing(data) {
-				_ = safeWriteClient(map[string]any{"type": "pong"})
-				continue
-			}
-
-			if err := asrConn.WriteMessage(mt, data); err != nil {
-				log.Warn("asr write err", "err", err)
+			if err := workerConn.WriteMessage(mt, data); err != nil {
+				log.Warn("worker write err", "err", err)
 				return
 			}
 		}
 	}()
 
-	// ---------- asr -> client ----------
+	// ---------- worker -> client ----------
 	go func() {
 		defer wg.Done()
 		defer closeStop()
 		for {
-			mt, data, err := asrConn.ReadMessage()
+			mt, data, err := workerConn.ReadMessage()
 			if err != nil {
 				if isNormalClose(err) {
-					log.Info("asr closed")
+					log.Info("worker closed")
 				} else {
-					log.Warn("asr read err", "err", err)
+					log.Warn("worker read err", "err", err)
 				}
 				return
 			}
 
-			// 二进制直接透传
-			if mt != websocket.TextMessage {
-				writeMu.Lock()
-				werr := clientConn.WriteMessage(mt, data)
-				writeMu.Unlock()
-				if werr != nil {
-					log.Warn("client write(bin) err", "err", werr)
-					return
-				}
-				continue
-			}
-
-			// 翻译 ASR 事件并发送
-			out := translateASREvent(data)
-			writeMu.Lock()
-			werr := clientConn.WriteMessage(websocket.TextMessage, out)
-			writeMu.Unlock()
+			clientWriteMu.Lock()
+			werr := clientConn.WriteMessage(mt, data)
+			clientWriteMu.Unlock()
 			if werr != nil {
 				log.Warn("client write err", "err", werr)
 				return
 			}
 
-			// M2: 收到 asr_final → 异步调用大模型（空文本则直接放行）
-			if h.llmConfig != nil && h.llmConfig.URL != "" {
-				var ev map[string]any
-				if err := json.Unmarshal(out, &ev); err == nil {
-					if t, _ := ev["type"].(string); t == "asr_final" {
-						if text, ok := ev["text"].(string); ok && text != "" {
-							go h.handleLLMResult(clientConn, text, &writeMu, log)
-						} else {
-							log.Info("asr_final empty text, skip llm")
-							writeMu.Lock()
-							_ = writeJSON(clientConn, map[string]any{
-								"type": "llm_result",
-								"text": "",
-							})
-							writeMu.Unlock()
-						}
-					}
-				}
+			// 会话观测：把关键事件打一行日志（不阻塞转发）
+			if mt == websocket.TextMessage {
+				logSessionEvent(log, data)
 			}
 		}
 	}()
 
-	// 等任意一边结束
 	<-stop
 	_ = clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	_ = asrConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	_ = workerConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	wg.Wait()
 	log.Info("session done")
 }
 
-// handleLLMResult 调用大模型 API，将结果通过 ws 送回客户端。
-func (h *VoiceHandler) handleLLMResult(conn *websocket.Conn, text string, writeMu *sync.Mutex, log *slog.Logger) {
-	t0 := time.Now()
-	reply, err := h.callLLM(text)
-	cost := time.Since(t0).Milliseconds()
-
-	if err != nil {
-		log.Warn("llm call failed", "err", err, "cost_ms", cost)
-		writeMu.Lock()
-		_ = writeJSON(conn, map[string]any{
-			"type":    "llm_error",
-			"message": err.Error(),
-		})
-		writeMu.Unlock()
-		return
+// buildWorkerURL 在 worker 的 WS URL 上附加 device_id / session_id 等
+// 透传参数，便于 worker 日志关联同一会话。
+func buildWorkerURL(base, deviceID string) (string, error) {
+	if deviceID == "" {
+		return base, nil
 	}
-
-	log.Info("llm ok", "cost_ms", cost, "reply_len", len(reply))
-	writeMu.Lock()
-	_ = writeJSON(conn, map[string]any{
-		"type": "llm_result",
-		"text": reply,
-	})
-	writeMu.Unlock()
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("device_id", deviceID)
+	q.Set("session_id", time.Now().UTC().Format("20060102T150405.000000000Z"))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
-// callLLM 调用兼容 OpenAI Chat Completions 格式的大模型 API。
-func (h *VoiceHandler) callLLM(text string) (string, error) {
-	cfg := h.llmConfig
-
-	// 组装 messages
-	messages := []map[string]string{}
-	if cfg.SystemPrompt != "" {
-		messages = append(messages, map[string]string{"role": "system", "content": cfg.SystemPrompt})
-	}
-	messages = append(messages, map[string]string{"role": "user", "content": text})
-
-	body := map[string]any{
-		"model":    cfg.Model,
-		"messages": messages,
-		"stream":   false,
-	}
-	bodyJSON, err := json.Marshal(body)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(bodyJSON))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeout)*time.Second)
-	defer cancel()
-	req = req.WithContext(ctx)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	if result.Error != nil && result.Error.Message != "" {
-		return "", errors.New("llm api error: " + result.Error.Message)
-	}
-
-	if len(result.Choices) > 0 {
-		return result.Choices[0].Message.Content, nil
-	}
-	return "", errors.New("llm response has no choices")
-}
-
-// translateASREvent 把 ASR 的事件 type 映射成家具协议（partial -> asr_partial, final -> asr_final）。
-func translateASREvent(raw []byte) []byte {
+// logSessionEvent 把 worker → client 的关键事件打一行精简日志，
+// 便于在 server 侧观测会话进度（不影响转发性能）。
+func logSessionEvent(log *slog.Logger, data []byte) {
 	var ev map[string]any
-	if err := json.Unmarshal(raw, &ev); err != nil {
-		return raw
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return
 	}
 	t, _ := ev["type"].(string)
 	switch t {
-	case "partial":
-		ev["type"] = "asr_partial"
-	case "final":
-		ev["type"] = "asr_final"
+	case "asr_final":
+		text, _ := ev["text"].(string)
+		log.Info("event", "type", t, "text", text)
+	case "llm_result":
+		text, _ := ev["text"].(string)
+		log.Info("event", "type", t, "len", len(text))
+	case "llm_error", "error":
+		msg, _ := ev["message"].(string)
+		log.Warn("event", "type", t, "message", msg)
 	}
-	out, err := json.Marshal(ev)
-	if err != nil {
-		return raw
-	}
-	return out
-}
-
-// isPing 判断是否是家具端的保活帧 {"type":"ping"}。
-func isPing(data []byte) bool {
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return false
-	}
-	t, _ := m["type"].(string)
-	return t == "ping"
 }
 
 func writeJSON(c *websocket.Conn, v any) error {

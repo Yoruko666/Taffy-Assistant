@@ -7,36 +7,29 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LLMConfig 大模型 API 配置（兼容 OpenAI Chat Completions 格式）。
-type LLMConfig struct {
-	URL           string `yaml:"url"`
-	APIKey        string `yaml:"api_key"`
-	Model         string `yaml:"model"`
-	SystemPrompt  string `yaml:"system_prompt"`
-	Timeout       int    `yaml:"timeout"` // 秒
+// WorkerConfig 描述 Worker（大模型编排进程）的接入信息。
+// 拆分后 Server 不再直接访问 ASR / LLM / TTS，全部通过 Worker 编排。
+type WorkerConfig struct {
+	WSURL string `yaml:"ws_url"`
 }
 
-// AppConfig 应用顶层配置。
+// AppConfig Server 顶层配置。
 type AppConfig struct {
-	LLM LLMConfig `yaml:"llm"`
+	Worker WorkerConfig `yaml:"worker"`
 }
 
 // setDefaults 填充零值字段为合理的默认值。
-// APIKey 优先从环境变量 LLM_API_KEY 读取，其次才用 YAML 中的值。
+// 环境变量 WORKER_WS_URL 优先级高于 YAML 中的值，便于容器化部署。
 func (c *AppConfig) setDefaults() {
-	if c.LLM.Model == "" {
-		c.LLM.Model = "gpt-3.5-turbo"
+	if c.Worker.WSURL == "" {
+		c.Worker.WSURL = "ws://127.0.0.1:8090/v1/orchestrate"
 	}
-	if c.LLM.Timeout <= 0 {
-		c.LLM.Timeout = 30
-	}
-	// 环境变量优先级高于配置文件
-	if envKey := os.Getenv("LLM_API_KEY"); envKey != "" {
-		c.LLM.APIKey = envKey
+	if v := os.Getenv("WORKER_WS_URL"); v != "" {
+		c.Worker.WSURL = v
 	}
 }
 
-// LoadConfig 从 YAML 文件加载配置。
+// LoadConfig 从 YAML 文件加载 server 配置。
 func LoadConfig(path string) (*AppConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -49,4 +42,12 @@ func LoadConfig(path string) (*AppConfig, error) {
 	}
 	cfg.setDefaults()
 	return &cfg, nil
+}
+
+// DefaultConfig 返回一个仅包含默认值（含环境变量覆盖）的配置，
+// 用于 YAML 文件不存在 / 解析失败时的降级。
+func DefaultConfig() *AppConfig {
+	cfg := &AppConfig{}
+	cfg.setDefaults()
+	return cfg
 }
