@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"system/internal/config"
 )
 
 // VoiceHandler 实现家具端 ↔ Server WebSocket（/v1/voice）。
@@ -33,7 +35,7 @@ type VoiceHandler struct {
 }
 
 // NewVoiceHandler 构造 voice handler，内部拨号到 worker。
-func NewVoiceHandler(cfg *AppConfig) *VoiceHandler {
+func NewVoiceHandler(cfg *config.AppConfig) *VoiceHandler {
 	workerURL := ""
 	if cfg != nil {
 		workerURL = cfg.Worker.WSURL

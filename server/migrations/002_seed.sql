@@ -1,0 +1,40 @@
+-- SHVA 测试种子数据
+-- 执行: mysql -u root -p < 002_seed.sql
+
+USE shva;
+
+-- 密码均为 "password123" 的 bcrypt 哈希（cost=10）
+INSERT INTO users (user_id, phone, email, password_hash, nickname) VALUES
+(1, '13800000001', 'alice@example.com', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJYd0QI4aKe', '小菲用户A'),
+(2, '13800000002', 'bob@example.com',  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJYd0QI4aKe', '小菲用户B');
+
+-- 设备：每个用户各几个家具
+INSERT INTO devices (device_id, owner_id, type, name, room, status, token) VALUES
+('speaker-001', 1, 'SPEAKER', '客厅小菲',  '客厅', 'online',  'tk_speaker_001'),
+('light-001',   1, 'LIGHT',   '客厅主灯',   '客厅', 'online',  'tk_light_001'),
+('light-002',   1, 'LIGHT',   '卧室灯',     '卧室', 'offline', 'tk_light_002'),
+('aircon-001',  1, 'AIRCON',  '客厅空调',    '客厅', 'online',  'tk_aircon_001'),
+('curtain-001', 1, 'CURTAIN', '客厅窗帘',    '客厅', 'online',  'tk_curtain_001'),
+('socket-001',  1, 'SOCKET',  '卧室插座',    '卧室', 'offline', 'tk_socket_001'),
+
+('speaker-002', 2, 'SPEAKER', '书房小菲',   '书房', 'online',  'tk_speaker_002'),
+('light-003',   2, 'LIGHT',   '书房灯',     '书房', 'online',  'tk_light_003'),
+('aircon-002',   2, 'AIRCON',  '书房空调',    '书房', 'offline', 'tk_aircon_002');
+
+-- 设备状态
+INSERT INTO device_states (device_id, power, brightness, temperature, mode, position) VALUES
+('speaker-001', TRUE,  NULL, NULL,  NULL, NULL),
+('light-001',   TRUE,  80,   NULL,  NULL, NULL),
+('light-002',   FALSE, 0,    NULL,  NULL, NULL),
+('aircon-001',  TRUE,  NULL, 26,    'cool', NULL),
+('curtain-001', TRUE,  NULL, NULL,  NULL, 70),
+('socket-001',  FALSE, NULL, NULL,  NULL, NULL),
+
+('speaker-002', TRUE,  NULL, NULL,  NULL, NULL),
+('light-003',   TRUE,  60,   NULL,  NULL, NULL),
+('aircon-002',  FALSE, NULL, 24,    'auto', NULL);
+
+-- 场景
+INSERT INTO scenes (user_id, name, command_list) VALUES
+(1, '回家模式', '[{"device_id":"light-001","action":"turn_on","params":{"brightness":80}},{"device_id":"aircon-001","action":"turn_on","params":{"temperature":26,"mode":"cool"}},{"device_id":"curtain-001","action":"set_position","params":{"position":70}}]'),
+(1, '睡眠模式', '[{"device_id":"light-001","action":"turn_off"},{"device_id":"light-002","action":"turn_off"},{"device_id":"curtain-001","action":"set_position","params":{"position":0}},{"device_id":"aircon-001","action":"set_temp","params":{"temperature":25,"mode":"auto"}}]');

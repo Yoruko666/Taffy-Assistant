@@ -8,3 +8,27 @@
 worker:
   # Worker 的 /v1/orchestrate WS 端点，Server 在每条家具会话中拨号到此 URL
   ws_url: "ws://127.0.0.1:8090/v1/orchestrate"
+
+# MySQL 数据库
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  user: "root"
+  password: ""
+  dbname: "shva"
+  # 连接池参数
+  max_open_conns: 20
+  max_idle_conns: 10
+  conn_max_lifetime: "5m"  # 5 分钟
+
+# Redis 缓存
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+
+# JWT 鉴权
+jwt:
+  secret: "change-me-in-production"
+  access_ttl: "2h"   # Access Token 有效期
+  refresh_ttl: "168h" # Refresh Token 有效期（7 天）

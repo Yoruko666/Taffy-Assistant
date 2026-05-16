@@ -10,7 +10,7 @@
 整体形态对齐主流智能音箱的端云分工（端侧 KWS+VAD，云端 ASR/LLM/TTS）：
 
 - **家具端（小菲） = 本地硬件**：跑在音箱 / PC 模拟器上，负责 **录音 → KWS 唤醒词 → VAD 端点检测 → WS 上行 → 播放 TTS**。**断句在端侧做**，不靠云端。
-- **Go Server = 中枢 / 信息接收与转发**：接受家具端 / 客户端的接入，做鉴权、对话历史落库、MQTT 设备控制；**不直接对接 AI**，把语音 WS 整段转发给 Worker。
+- **Go Server = 中枢 / 信息接收与转发**：接受家具端 / 客户端的接入，做 JWT 鉴权、用户/设备 CRUD、对话历史落库（MySQL + Redis）、MQTT 设备控制；**不直接对接 AI**，把语音 WS 整段转发给 Worker。
 - **Go Worker = 大模型编排**：独占 ASR / LLM / TTS 调度。一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 由 Server 原样转发到 Worker，Worker 转 ASR、`asr_final` 触发 LLM、回 `llm_result`，再由 Server 透传回家具端。
 - **模型服务**：仅提供本地 ASR（FunASR paraformer-zh-streaming）和 TTS（Piper）推理能力，由 Worker 按需调用。
 
@@ -29,7 +29,7 @@
                 │ │ MQTT Bridge  │─▶ EMQX (M3) │        │ │             │─▶│ TTS :9200  │ │
                 │ └──────────────┘             │        │ └─────────────┘  └────────────┘ │
                 │ ┌──────────────┐             │        │                                 │
-                │ │ MySQL/Redis  │  (M3)       │        │                                 │
+                │ │ MySQL/Redis  │ (已接入)     │        │                                 │
                 │ └──────────────┘             │        │                                 │
                 └──────────────┬───────────────┘        └─────────────────────────────────┘
                                │ WS /v1/voice  （音频上行 + asr_*/llm_* 下行）
@@ -37,13 +37,13 @@
                   ┌──────────────────────────────┐
                   │      家具端（小菲）           │
                   │      (furniture/)            │
-                  │ 麦克风 → KWS → VAD → WS 上行 │
-                  │ VAD 发 end → 暂停 → 收回复 → │
-                  │ 恢复；扬声器(TTS)/MQTT 控制  │
+                  │ 麦克风 → KWS → VAD → WS 上行  │
+                  │ VAD 发 end → 暂停 → 收回复 →  │
+                  │ 恢复；扬声器(TTS)/MQTT 控制   │
                   └──────────────────────────────┘
 ```
 
-### 端侧（小菲）的职责链（重要）
+### 端侧（小菲）的职责链
 
 家具端内部严格按下列流水线工作，**和主流商用智能音箱完全一致**：
 
@@ -76,10 +76,10 @@
 |---|---|---|
 | 家具端 `furniture/` | PC 端：Python + `webrtcvad`（默认）；硬件可选 ESP32 / 树莓派；唤醒词可选 openWakeWord / Porcupine | 音频走 WebSocket 到 server；设备控制走 MQTT 到 server。**不直连 worker / model** |
 | 客户端 `client/` | Android（Kotlin + Jetpack Compose） | HTTP / WebSocket 到 server；只对 server 一个端点 |
-| 服务器 `server/` | Go 1.22 标准库 `net/http` + `gorilla/websocket`（后续按需接 MQTT 客户端、MySQL、Redis） | 中枢：接入家具端 / 客户端，转发到 worker，落库与 MQTT 设备控制 |
+| 服务器 `server/` | Go 1.22 标准库 `net/http` + `gorilla/websocket` + `go-sql-driver/mysql` + `go-redis/v9` + `golang-jwt/v5` + `golang.org/x/crypto` | 中枢：接入家具端 / 客户端，转发到 worker，落库与 MQTT 设备控制 |
 | Worker `worker/` | Go 1.22 + `gorilla/websocket` + `gopkg.in/yaml.v3` | 大模型编排：对接 ASR / LLM / TTS，被 server 通过 WS 调用 |
 | 模型服务 `model/` | Python（FastAPI） | 仅提供模型推理服务，不参与业务逻辑：<br>• **流式 ASR**（FunASR paraformer-zh-streaming，`:9100`，WS `/v1/asr/stream`）<br>• **本地 TTS**（Piper huayan-medium，`:9200`，REST `/v1/tts/synthesize`）<br>由 worker 调用 |
-| 数据库 | MySQL + Redis（M3 接入） | 由 server 持有连接，客户端不直接访问 |
+| 数据库 | MySQL 8 + Redis 7（已接入） | 由 server 持有连接，客户端不直接访问 |
 | 消息中间件 | MQTT broker（Mosquitto / EMQX，外部部署） | server 既是 publisher（下发控制）也是 subscriber（接收设备状态） |
 | 版本管理 | Git + GitHub | 仓库：<https://github.com/Yoruko666/System> |
 
@@ -118,12 +118,32 @@ System/
 ├── server/                                         # Go 服务器（中枢：家具/客户端入口、转发到 worker、MQTT/CRUD）
 │   ├── README.md
 │   ├── go.mod / go.sum
-│   ├── config.yaml                                 # 仅 worker 接入地址（worker.ws_url）
+│   ├── config.yaml                                 # Worker + MySQL + Redis + JWT 配置
+│   ├── migrations/                                  # 数据库迁移脚本
+│   │   ├── 001_init.sql                            # 建库建表（7 张表）
+│   │   └── 002_seed.sql                            # 测试种子数据
 │   ├── cmd/server/main.go                          # 入口：加载配置 + 路由注册 + 优雅退出
-│   └── internal/handler/                           # HTTP / WebSocket 处理器
-│       ├── config.go                               # AppConfig / WorkerConfig 解析
-│       ├── health.go                               # /v1/health（worker / mqtt / db）
-│       └── voice.go                                # /v1/voice 家具 ↔ worker 双向纯透传 + 会话日志
+│   └── internal/
+│       ├── config/config.go                         # AppConfig / MySQLConfig / RedisConfig / JWTConfig
+│       ├── model/model.go                           # 数据模型（User/Device/DeviceState/...）
+│       ├── database/
+│       │   ├── mysql.go                             # MySQL 连接初始化 + 健康检查
+│       │   └── redis.go                            # Redis 连接初始化 + 健康检查
+│       ├── repository/
+│       │   ├── user.go                             # 用户 CRUD
+│       │   ├── device.go                           # 设备 CRUD
+│       │   ├── device_state.go                     # 设备状态 Upsert
+│       │   └── conversation.go                     # 对话/消息/指令/场景 CRUD
+│       ├── service/
+│       │   ├── user.go                             # 注册/登录/密码校验（bcrypt）
+│       │   └── device.go                          # 设备创建/状态更新/权限校验
+│       ├── middleware/jwt.go                       # JWT 生成/解析/黑名单/RequireAuth
+│       └── handler/
+│           ├── config_compat.go                    # LoadConfig/DefaultConfig 向后兼容
+│           ├── health.go                           # /v1/health（worker/db/redis 状态）
+│           ├── voice.go                            # /v1/voice 家具 ↔ worker 双向纯透传
+│           ├── auth.go                             # /api/v1/auth/register + /login
+│           └── device.go                           # /api/v1/devices/* 设备与状态 API
 │
 ├── worker/                                         # Go Worker（大模型编排：ASR / LLM / TTS）
 │   ├── README.md
@@ -221,6 +241,15 @@ curl http://127.0.0.1:8090/v1/health
 
 ```powershell
 cd server
+
+# 初始化数据库（首次运行）
+# 1. 先启动 MySQL，然后执行迁移脚本：
+mysql -u root -p < migrations/001_init.sql   # 建库建表
+mysql -u root -p < migrations/002_seed.sql    # 可选：插入测试数据
+
+# 2. 修改 config.yaml 中的 mysql.password 和 jwt.secret
+
+# 3. 启动 Server
 $env:WORKER_WS_URL = "ws://127.0.0.1:8090/v1/orchestrate"   # 可选，默认即此
 go run ./cmd/server      # 监听 :8080，转发到 worker
 ```
@@ -232,6 +261,19 @@ curl http://127.0.0.1:8080/v1/health
 ```
 
 也可不配大模型（worker 自动降级为纯 ASR 透传），仅测试 ASR 链路的启动方式不变。
+
+### 3. REST API 端点一览
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/register` | 否 | 用户注册，返回 JWT |
+| `POST` | `/api/v1/auth/login` | 否 | 用户登录，返回 JWT |
+| `GET` | `/api/v1/devices` | JWT | 获取当前用户所有设备 |
+| `GET` | `/api/v1/devices/states` | JWT | 获取当前用户所有设备状态 |
+| `PUT` | `/api/v1/devices/state` | JWT | 更新设备状态（power/温度/亮度/开合度） |
+| `GET` | `/api/v1/devices/{id}/state` | JWT | 获取单个设备状态 |
+
+> 鉴权方式：在请求头添加 `Authorization: Bearer <jwt_token>`
 
 ### 4. 家具端测试（实时麦克风，含 LLM 多轮对话）
 

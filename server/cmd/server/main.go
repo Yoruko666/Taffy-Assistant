@@ -3,7 +3,7 @@
 // 拆分后职责：
 //   - 接收家具端 / 客户端的接入（WS / REST）
 //   - 把家具端的语音 WS 会话整段转发给 Worker（大模型编排进程）
-//   - 未来：用户/设备 CRUD、对话历史落库、MQTT 设备控制
+//   - 用户/设备 CRUD、对话历史落库、MQTT 设备控制
 //
 // Server **不直接** 接 ASR / LLM / TTS，相关配置已搬到 worker/config.yaml。
 //
@@ -29,7 +29,12 @@ import (
 	"syscall"
 	"time"
 
+	"system/internal/config"
+	"system/internal/database"
 	"system/internal/handler"
+	"system/internal/middleware"
+	"system/internal/repository"
+	"system/internal/service"
 )
 
 func main() {
@@ -39,18 +44,86 @@ func main() {
 	port := getenv("PORT", "8080")
 	configPath := getenv("CONFIG_PATH", "config.yaml")
 
-	cfg, err := handler.LoadConfig(configPath)
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		slog.Warn("config load failed, falling back to env-only defaults", "path", configPath, "err", err)
-		cfg = handler.DefaultConfig()
+		cfg = config.DefaultConfig()
 	}
 	slog.Info("config ready", "worker_ws", cfg.Worker.WSURL)
 
+	// ──────────── 初始化 MySQL ────────────
+	db, err := database.InitMySQL(&cfg.MySQL)
+	if err != nil {
+		slog.Warn("mysql init failed, running without database", "err", err)
+	} else {
+		defer db.Close()
+	}
+
+	// ──────────── 初始化 Redis ────────────
+	rdb, err := database.InitRedis(&cfg.Redis)
+	if err != nil {
+		slog.Warn("redis init failed, running without cache", "err", err)
+	} else {
+		defer rdb.Close()
+	}
+
+	// ──────────── 组装依赖 ────────────
+	jwtMW := middleware.NewJWTMiddleware(&cfg.JWT, rdb)
+
+	var userSvc *service.UserService
+	var deviceSvc *service.DeviceService
+	if db != nil {
+		userRepo := repository.NewUserRepo(db)
+		deviceRepo := repository.NewDeviceRepo(db)
+		stateRepo := repository.NewDeviceStateRepo(db)
+
+		userSvc = service.NewUserService(userRepo)
+		deviceSvc = service.NewDeviceService(deviceRepo, stateRepo)
+	}
+
+	authHandler := handler.NewAuthHandler(userSvc, jwtMW, cfg)
+	deviceHandler := handler.NewDeviceHandler(deviceSvc)
+
+	// ──────────── 路由注册 ────────────
 	mux := http.NewServeMux()
+
+	// 健康检查
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		handler.HealthWithConfig(w, r, cfg)
+		handler.HealthWithDB(w, r, cfg, db, rdb)
 	})
+
+	// 语音透传（家具端 WS）
 	mux.Handle("/v1/voice", handler.NewVoiceHandler(cfg))
+
+	// 认证（无需鉴权）
+	mux.HandleFunc("/api/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		authHandler.Register(w, r)
+	})
+	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		authHandler.Login(w, r)
+	})
+
+	// 设备 API（需鉴权）
+	if db != nil {
+		mux.HandleFunc("/api/v1/devices", jwtMW.RequireAuth(deviceHandler.ListDevices))
+		mux.HandleFunc("/api/v1/devices/states", jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
+		mux.HandleFunc("/api/v1/devices/state", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut {
+				jwtMW.RequireAuth(deviceHandler.UpdateDeviceState).ServeHTTP(w, r)
+			} else {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		})
+		mux.HandleFunc("/api/v1/devices/{deviceID}/state", jwtMW.RequireAuth(deviceHandler.GetDeviceState))
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,

@@ -4,10 +4,11 @@
 >
 > **职责**：
 >
-> - 客户端鉴权、用户/设备管理、对话历史落库（CRUD，M3 接入 MySQL/Redis）
+> - 客户端 JWT 鉴权、用户/设备管理、对话历史落库（MySQL + Redis，已接入）
 > - 家具端音频 WebSocket 接入与转发到 Worker
+> - 设备状态 CRUD（开/关、温度、亮度、开合度等）
 > - 通过 MQTT 下发设备控制指令、接收设备状态（M3）
-> - 客户端 App 的 REST + WS 状态推送
+> - 客户端 App 的 REST + WS 状态推送（M3）
 
 ---
 
@@ -22,7 +23,7 @@
                          │  └───────────────────────┴──┘
                          │
                          ├──MQTT───▶ EMQX ──▶ 其他家具（灯/空调/窗帘）  (M3)
-                         └──MySQL/Redis──▶ 用户/设备/会话历史            (M3)
+                         └──MySQL/Redis──▶ 用户/设备/会话历史            (已接入)
 
 
 [客户端 App] ──HTTPS / WSS──▶ Go Server 的 REST + 状态推送（不走音频）
@@ -50,12 +51,16 @@
 | 端点 | 协议 | 调用方 | 用途 |
 |---|---|---|---|
 | `/v1/voice` | **WS** | 家具端 | **核心**：音频上行 / 识别文本与回复下行（透传到 Worker） |
-| `/api/v1/auth/*` | HTTPS | 客户端 App | 注册 / 登录 / 登出 |
-| `/api/v1/devices/*` | HTTPS | 客户端 App | 设备绑定 / 列表 / 状态 |
-| `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理 |
-| `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史 |
-| `/ws` | WSS | 客户端 App | 设备状态实时推送（device.status / chat.message） |
-| `/v1/health` | HTTP | 运维 / 客户端 | 健康检查 |
+| `/api/v1/auth/register` | HTTPS | 客户端 App | 用户注册，返回 JWT |
+| `/api/v1/auth/login` | HTTPS | 客户端 App | 用户登录，返回 JWT |
+| `/api/v1/devices` | HTTPS | 客户端 App | 获取当前用户所有设备（JWT 鉴权） |
+| `/api/v1/devices/states` | HTTPS | 客户端 App | 获取当前用户所有设备状态（JWT 鉴权） |
+| `/api/v1/devices/state` | HTTPS | 客户端 App | 更新设备状态（PUT，JWT 鉴权） |
+| `/api/v1/devices/{id}/state` | HTTPS | 客户端 App | 获取单个设备状态（JWT 鉴权） |
+| `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理（M3） |
+| `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史（M3） |
+| `/ws` | WSS | 客户端 App | 设备状态实时推送（M3） |
+| `/v1/health` | HTTP | 运维 / 客户端 | 健康检查（含 db / redis 状态） |
 
 ---
 
@@ -99,12 +104,32 @@ Server 的 `/v1/voice` 不再做事件翻译、不再调 LLM，**改成纯 WS �
 
 ```
 server/
-├── config.yaml                          # Worker 接入地址（worker.ws_url）
-├── cmd/server/main.go                   # 入口：加载配置 → 路由注册 → 优雅退出
-└── internal/handler/
-    ├── config.go                        # AppConfig / WorkerConfig 解析（支持 $env:WORKER_WS_URL）
-    ├── health.go                        # /v1/health（worker / mqtt / db 状态）
-    └── voice.go                         # /v1/voice（家具 ↔ worker 双向透传 + 会话日志）
+├── config.yaml                          # Worker + MySQL + Redis + JWT 配置
+├── migrations/
+│   ├── 001_init.sql                     # 建库建表（7 张表）
+│   └── 002_seed.sql                     # 测试种子数据
+├── cmd/server/main.go                   # 入口：加载配置 → 初始化 DB/Redis → 路由注册 → 优雅退出
+└── internal/
+    ├── config/config.go                  # AppConfig / MySQLConfig / RedisConfig / JWTConfig
+    ├── model/model.go                    # 数据模型（User/Device/DeviceState/Conversation/Message/Command/Scene）
+    ├── database/
+    │   ├── mysql.go                      # MySQL 连接初始化 + 健康检查
+    │   └── redis.go                      # Redis 连接初始化 + 健康检查
+    ├── repository/
+    │   ├── user.go                       # 用户 CRUD
+    │   ├── device.go                     # 设备 CRUD
+    │   ├── device_state.go              # 设备状态 Upsert + 联表查询
+    │   └── conversation.go              # 对话/消息/指令/场景 CRUD
+    ├── service/
+    │   ├── user.go                       # 注册/登录/密码校验（bcrypt）
+    │   └── device.go                    # 设备创建/状态更新/权限校验
+    ├── middleware/jwt.go                 # JWT 生成/解析/黑名单/RequireAuth
+    └── handler/
+        ├── config_compat.go             # LoadConfig/DefaultConfig 向后兼容
+        ├── health.go                     # /v1/health（worker/db/redis 状态）
+        ├── voice.go                      # /v1/voice（家具 ↔ worker 双向透传 + 会话日志）
+        ├── auth.go                       # /api/v1/auth/register + /login
+        └── device.go                    # /api/v1/devices/* 设备与状态 API
 ```
 
 ### 依赖
@@ -112,6 +137,10 @@ server/
 ```bash
 go get github.com/gorilla/websocket
 go get gopkg.in/yaml.v3
+go get github.com/go-sql-driver/mysql
+go get github.com/redis/go-redis/v9
+go get github.com/golang-jwt/jwt/v5
+go get golang.org/x/crypto
 ```
 
 ### 配置方式
@@ -119,8 +148,22 @@ go get gopkg.in/yaml.v3
 | 字段 | YAML 配置项 | 环境变量（更高优先级） |
 |---|---|---|
 | Worker WS 地址 | `worker.ws_url` | `WORKER_WS_URL`（默认 `ws://127.0.0.1:8090/v1/orchestrate`） |
+| MySQL 主机 | `mysql.host` | `MYSQL_HOST`（默认 `127.0.0.1`） |
+| MySQL 密码 | `mysql.password` | `MYSQL_PASSWORD` |
+| Redis 地址 | `redis.addr` | `REDIS_ADDR`（默认 `127.0.0.1:6379`） |
+| JWT 密钥 | `jwt.secret` | `JWT_SECRET`（默认 `change-me-in-production`） |
 | HTTP 端口 | — | `PORT`（默认 `8080`） |
 | 配置路径 | — | `CONFIG_PATH`（默认 `config.yaml`） |
+
+### 数据库初始化
+
+```powershell
+# 首次运行：建库建表
+mysql -u root -p < migrations/001_init.sql
+
+# 可选：插入测试数据
+mysql -u root -p < migrations/002_seed.sql
+```
 
 > LLM / ASR / TTS 的所有配置（API Key、URL、模型名等）已搬到 [`../worker/config.yaml`](../worker/config.yaml)。Server 不再持有 `LLM_API_KEY`。
 
@@ -152,10 +195,13 @@ go get gopkg.in/yaml.v3
 
    ```powershell
    cd server
+   # 首次运行先初始化数据库
+   mysql -u root -p < migrations/001_init.sql
+   # 修改 config.yaml 中的 mysql.password
    $env:PORT = "8080"
    $env:WORKER_WS_URL = "ws://127.0.0.1:8090/v1/orchestrate"
    go run ./cmd/server
-   curl http://127.0.0.1:8080/v1/health
+   curl http://127.0.0.1:8080/v1/health   # 期望 db: "ok", redis: "ok"
    ```
 
 4. 第 4 层（直连 worker，跳过 server，验证 AI 工作流）：
@@ -229,8 +275,12 @@ ws://server:8080/v1/voice?device_id=<id>&token=<device-token>
 - [x] 实现 `/v1/voice` 透传（M1）
 - [x] 接入云端 LLM（M2，已迁移至 worker）
 - [x] **拆出 worker，server 改为纯转发**（v0.3）
-- [ ] 实现客户端 JWT 鉴权与登录
+- [x] **MySQL + Redis 接入**（v0.4）
+- [x] **用户注册/登录 API**（JWT + bcrypt）
+- [x] **设备与状态 CRUD API**
+- [x] **数据库迁移脚本（7 张表）**
 - [ ] 实现设备 Token 鉴权
 - [ ] 接入 MQTT（推荐 `eclipse/paho.mqtt.golang`）
-- [ ] 对话历史落库（MySQL + Redis）
+- [ ] 对话历史落库（conversation/message 写入）
 - [ ] 健康巡检：定时打 worker `/v1/health`
+- [ ] 客户端 WebSocket 状态推送 Hub
