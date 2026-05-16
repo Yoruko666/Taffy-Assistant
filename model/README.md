@@ -169,15 +169,15 @@ curl -X POST -H "Content-Type: application/json" `
 
 ---
 
-## Go Server 调用片段
+## Go Worker 调用片段
 
 ### ASR：透传客户端 WS 到 ASR WS（推荐路径）
 
-完整骨架见 [`server/README.md`](../server/README.md) 的"WebSocket 透传层"章节。核心思路：
+完整骨架见 [`worker/README.md`](../worker/README.md) 的"核心"章节。核心思路：
 
 ```go
-// 客户端 WS  <----->  Go Server WS  <----->  ASR WS（本机）
-//          双向 goroutine 转发，Go Server 顺手把 final 文本喂给 LLM
+// 家具端 WS  <----->  Go Server WS  <----->  Go Worker WS  <----->  ASR WS（本机）
+//          双向 goroutine 透传，Go Worker 顺手把 final 文本喂给 LLM（含 Tool Call）
 ```
 
 ### TTS：HTTP 文本 → 音频字节
@@ -332,9 +332,9 @@ PASS: 6/6
 ## 后续工作（TODO）
 
 - [x] 流式 ASR WebSocket 接口（主接口）与联调脚本
-- [x] Go Server 完成 `/v1/voice` WS 透传层（见 [`server/README.md`](../server/README.md)）
-- [x] Go Server 接入云端 LLM（config.yaml + $env:LLM_API_KEY）
-- [ ] Go Server 接入 MQTT 设备控制与 TTS 回播
+- [x] Go Worker 完成 `/v1/orchestrate` WS 透传层（见 [`worker/README.md`](../worker/README.md)）
+- [x] Go Worker 接入云端 LLM + Function Calling（config.yaml + $env:LLM_API_KEY）
+- [ ] Go Server/Worker 接入 MQTT 设备控制与 TTS 回播
 - [ ] ASR / TTS 接入 Go Server 的健康巡检（`/v1/health`）
 - [ ] 家具端协议落地（见 [`furniture/README.md`](../furniture/README.md)）
 

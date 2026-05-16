@@ -83,6 +83,7 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(userSvc, jwtMW, cfg)
 	deviceHandler := handler.NewDeviceHandler(deviceSvc)
+	voiceHandler := handler.NewVoiceHandler(cfg, deviceSvc)
 
 	// ──────────── 路由注册 ────────────
 	mux := http.NewServeMux()
@@ -93,7 +94,7 @@ func main() {
 	})
 
 	// 语音透传（家具端 WS）
-	mux.Handle("/v1/voice", handler.NewVoiceHandler(cfg))
+	mux.Handle("/v1/voice", voiceHandler)
 
 	// 认证（无需鉴权）
 	mux.HandleFunc("/api/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {

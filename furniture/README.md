@@ -32,6 +32,18 @@ python furniture/mock_furniture.py --list-devices
 
 这样避免 LLM 处理期间用户的新语音和旧结果混淆，形成自然的**用户说 → 机器答 → 用户再说**对话节奏。
 
+### v0.5 Tool Call 流程
+
+当用户指令涉及设备控制（如"打开客厅灯"）时，LLM 会通过 Function Calling 机制调用 `control_device` 工具：
+
+1. ASR 识别文本 → Worker 调用 LLM（携带设备上下文 + Tool Schema）
+2. LLM 返回 `tool_calls`（如 `control_device`）→ Worker 下发 `device_command` 给 Server
+3. Server 执行设备控制（更新 DB）→ 回复 `device_command_result` 给 Worker
+4. Worker 二次调用 LLM（携带 tool 执行结果）→ LLM 生成自然语言回复
+5. Worker 回传 `llm_result` → 家具端显示回复
+
+家具端感知上与之前完全一致——只收到 `llm_result`，中间的 tool call 过程对家具端透明。
+
 ### 协议：家具端 ↔ Go Server WebSocket
 
 **端点**：`wss://server:8080/v1/voice?device_id=<id>&token=<token>`

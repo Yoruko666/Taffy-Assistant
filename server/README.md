@@ -7,6 +7,8 @@
 > - 客户端 JWT 鉴权、用户/设备管理、对话历史落库（MySQL + Redis，已接入）
 > - 家具端音频 WebSocket 接入与转发到 Worker
 > - 设备状态 CRUD（开/关、温度、亮度、开合度等）
+> - **拦截 Worker 的 `device_command` 事件，执行设备控制（更新 DB + 转发），回传结果给 Worker**
+> - **会话建立时推送用户设备列表与状态（`device_info`）给 Worker，供 LLM 上下文注入**
 > - 通过 MQTT 下发设备控制指令、接收设备状态（M3）
 > - 客户端 App 的 REST + WS 状态推送（M3）
 
@@ -18,9 +20,11 @@
 [家具端]                 [Go Server :8080]              [Go Worker :8090]            [模型/外部服务]
   麦克风 ──WS音频──▶  /v1/voice  ──WS透传──▶  /v1/orchestrate  ──WS音频──▶ ASR :9100
   扬声器 ◀──事件流──     │  ▲                       │  ▲                  ──HTTPS──▶ 云端 LLM
-                         │  │ asr_partial/asr_final │  │                   ──HTTP───▶ TTS :9200
+                         │  │ asr_partial/asr_final │  │  (含 Tool Call)   ──HTTP───▶ TTS :9200
                          │  │ llm_result/llm_error  │  │
-                         │  └───────────────────────┴──┘
+                         │  │ device_command ────────┼──┘  (v0.5: Worker→Server 设备控制)
+                         │  │ device_command_result ─┘     (v0.5: Server→Worker 控制结果)
+                         │  │ device_info ──────────┘     (v0.5: Server→Worker 设备上下文)
                          │
                          ├──MQTT───▶ EMQX ──▶ 其他家具（灯/空调/窗帘）  (M3)
                          └──MySQL/Redis──▶ 用户/设备/会话历史            (已接入)
@@ -40,7 +44,7 @@
 | **M-GW** | API 网关 | 客户端 / 家具端 接入、JWT 鉴权、限流 |
 | **M-AU** | 用户与认证 | 用户注册、登录、密码哈希、JWT 签发 |
 | **M-DV** | 设备管理 | 设备绑定、属性、能力、在线状态、MQTT 收发 |
-| **M-CH** | 会话与转发 | 接收家具端音频流 → 透传到 Worker → 把 Worker 结果回送 → 落库对话历史 |
+| **M-CH** | 会话与转发 | 接收家具端音频流 → 透传到 Worker → 把 Worker 结果回送 → 拦截 `device_command` 执行设备控制 → 推送 `device_info` 设备上下文 → 落库对话历史 |
 | **M-SC** | 场景服务 | 场景定义、触发与执行 |
 | **M-WK** | 大模型编排 | 已搬到 [`worker/`](../worker) |
 
@@ -50,7 +54,7 @@
 
 | 端点 | 协议 | 调用方 | 用途 |
 |---|---|---|---|
-| `/v1/voice` | **WS** | 家具端 | **核心**：音频上行 / 识别文本与回复下行（透传到 Worker） |
+| `/v1/voice` | **WS** | 家具端 | **核心**：音频上行 / 识别文本与回复下行（透传到 Worker）/ device_command 拦截执行 / device_info 上下文推送 |
 | `/api/v1/auth/register` | HTTPS | 客户端 App | 用户注册，返回 JWT |
 | `/api/v1/auth/login` | HTTPS | 客户端 App | 用户登录，返回 JWT |
 | `/api/v1/devices` | HTTPS | 客户端 App | 获取当前用户所有设备（JWT 鉴权） |
@@ -86,15 +90,25 @@
 | Server→家具 | text | `{"type":"llm_error","message":"..."}` |
 | Server→家具 | text | `{"type":"error","message":"..."}` |
 
-### 处理逻辑（拆分后）
+**v0.5 新增：Tool Call 扩展协议（Server ↔ Worker 间）**
 
-Server 的 `/v1/voice` 不再做事件翻译、不再调 LLM，**改成纯 WS 透传 + 会话日志**：
+| 方向 | 帧类型 | 内容 |
+|---|---|---|
+| Server→Worker | text | `{"type":"device_info","devices":[...]}`  — 会话建立后推送用户设备列表+状态 |
+| Worker→Server | text | `{"type":"device_command","tool_id":"...","function":{"name":"control_device","arguments":"{...}"}}` |
+| Server→Worker | text | `{"type":"device_command_result","tool_id":"...","success":true,"message":"..."}` |
+
+### 处理逻辑（v0.5 Tool Call 后）
+
+Server 的 `/v1/voice` 不再做事件翻译、不再调 LLM，**改为 WS 透传 + device_command 拦截执行 + 设备上下文推送 + 会话日志**：
 
 1. 家具端连上 → Server 校验 `device_id` / `token`（M3 启用）
 2. Server 拨号到 Worker `/v1/orchestrate`，把 `device_id` 通过 query 透传过去
-3. 双向纯字节透传：家具端的 text/binary 原样转发给 Worker；Worker 的回包原样回家具端
-4. 关键事件（`asr_final` / `llm_result` / `error`）在 Server 侧打一行 INFO 日志，便于观测
-5. 任意一边断开 → 关闭另一边 → 写对话历史（M3）
+3. Server 查询该用户的所有设备+状态，通过 `device_info` 事件推送给 Worker（供 LLM 上下文注入）
+4. 双向透传：家具端的 text/binary 原样转发给 Worker；Worker 的回包原样回家具端
+5. **新增**：Worker 下发 `device_command` 时，Server 拦截并调用 DeviceService 执行设备控制（更新 DB），然后回复 `device_command_result`
+6. 关键事件（`asr_final` / `llm_result` / `device_command` / `error`）在 Server 侧打一行 INFO 日志
+7. 任意一边断开 → 关闭另一边 → 写对话历史（M3）
 
 事件翻译（`partial → asr_partial`）和 LLM 调用都在 Worker 内部完成，Server 不感知。
 
@@ -127,7 +141,7 @@ server/
     └── handler/
         ├── config_compat.go             # LoadConfig/DefaultConfig 向后兼容
         ├── health.go                     # /v1/health（worker/db/redis 状态）
-        ├── voice.go                      # /v1/voice（家具 ↔ worker 双向透传 + 会话日志）
+        ├── voice.go                      # /v1/voice（家具 ↔ worker 透传 + device_command 拦截执行 + device_info 上下文推送 + 会话日志）
         ├── auth.go                       # /api/v1/auth/register + /login
         └── device.go                    # /api/v1/devices/* 设备与状态 API
 ```
@@ -224,7 +238,7 @@ mysql -u root -p < migrations/002_seed.sql
 ### 期望日志
 
 - **家具端**：`asr_partial` × N → `asr_final: 把客厅的灯打开` → `eos` → `llm_result`
-- **Server**：`client connected` → `worker connected worker=ws://127.0.0.1:8090/...` → `event type=asr_final text=...` → `event type=llm_result len=...` → `session done`
+- **Server**：`client connected` → `worker connected worker=ws://127.0.0.1:8090/...` → `pushed device_info N devices` → `event type=asr_final text=...` → `device_command tool_id=... action=control_device` → `device_command_result tool_id=... success=true` → `event type=llm_result len=...` → `session done`
 - **Worker**：`upstream connected` → `asr connected` → `llm ok cost_ms=...` → `session done`
 - **ASR Model**：`ws connected` → `segment #1 done: text='把客厅的灯打开'`
 
@@ -237,13 +251,13 @@ mysql -u root -p < migrations/002_seed.sql
 
 ## 设计要点
 
-### 1. 双向纯透传，不动一个字节
+### 1. 透传 + device_command 拦截
 
-家具端发什么、Server 就转什么给 Worker；Worker 回什么、Server 就回什么给家具端。
-text 帧只用于打日志，**不修改**。这样：
+家具端发什么、Server 就转什么给 Worker；Worker 回什么、Server 就回什么给家具端——**除了 `device_command`**。
 
+- `device_command` 被 Server 拦截，调用 DeviceService 执行设备控制后，回复 `device_command_result`
+- 其他 text 帧只用于打日志，**不修改**
 - 协议演进时只需要改 worker，不必动 server
-- 增减事件类型（`tts_audio` / `device_intent` 等）零成本
 - Server 永远不会成为协议瓶颈
 
 ### 2. Server ↔ Worker 复用单 WS
@@ -279,6 +293,8 @@ ws://server:8080/v1/voice?device_id=<id>&token=<device-token>
 - [x] **用户注册/登录 API**（JWT + bcrypt）
 - [x] **设备与状态 CRUD API**
 - [x] **数据库迁移脚本（7 张表）**
+- [x] **LLM Tool Call 设备控制拦截与执行**（v0.5：VoiceHandler 拦截 device_command + DeviceService 更新 DB + 回传结果）
+- [x] **设备上下文推送**（v0.5：会话建立时查询用户设备列表+状态，推送给 Worker）
 - [ ] 实现设备 Token 鉴权
 - [ ] 接入 MQTT（推荐 `eclipse/paho.mqtt.golang`）
 - [ ] 对话历史落库（conversation/message 写入）

@@ -10,8 +10,8 @@
 整体形态对齐主流智能音箱的端云分工（端侧 KWS+VAD，云端 ASR/LLM/TTS）：
 
 - **家具端（小菲） = 本地硬件**：跑在音箱 / PC 模拟器上，负责 **录音 → KWS 唤醒词 → VAD 端点检测 → WS 上行 → 播放 TTS**。**断句在端侧做**，不靠云端。
-- **Go Server = 中枢 / 信息接收与转发**：接受家具端 / 客户端的接入，做 JWT 鉴权、用户/设备 CRUD、对话历史落库（MySQL + Redis）、MQTT 设备控制；**不直接对接 AI**，把语音 WS 整段转发给 Worker。
-- **Go Worker = 大模型编排**：独占 ASR / LLM / TTS 调度。一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 由 Server 原样转发到 Worker，Worker 转 ASR、`asr_final` 触发 LLM、回 `llm_result`，再由 Server 透传回家具端。
+- **Go Server = 中枢 / 信息接收与转发 + 设备控制执行**：接受家具端 / 客户端的接入，做 JWT 鉴权、用户/设备 CRUD、对话历史落库（MySQL + Redis）、MQTT 设备控制；**不直接对接 AI**，把语音 WS 整段转发给 Worker；同时拦截 Worker 的 `device_command` 事件，执行设备控制（更新 DB + 转发控制指令），将结果回传 Worker 供 LLM 生成最终回复。
+- **Go Worker = 大模型编排 + Tool Call**：独占 ASR / LLM / TTS 调度，并支持 **OpenAI Function Calling**。一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 由 Server 原样转发到 Worker，Worker 转 ASR、`asr_final` 触发 LLM；当 LLM 返回 `tool_calls`（如 `control_device`）时，Worker 通过 WS 下发 `device_command` 给 Server 执行，收到执行结果后二次调用 LLM 生成自然语言回复，最终回传 `llm_result`。
 - **模型服务**：仅提供本地 ASR（FunASR paraformer-zh-streaming）和 TTS（Piper）推理能力，由 Worker 按需调用。
 
 ```
@@ -61,14 +61,16 @@
 - **断句归端侧**：`webrtcvad` 监听持续静音 ≥ 800ms 自动发 `end`，不靠 ASR 去切句，避免云端延迟放大。
 - **KWS 抽象**：`WakeWord` 基类预留接口；M2 用 `AlwaysOnWakeWord` 默认一直活跃，M3 替换为 openWakeWord / Porcupine 即可获得"嗨家具"式唤醒，**无需动主流程**。
 
-### 一次"打开客厅灯"的完整链路（v0.3 拆分后）
+### 一次"打开客厅灯"的完整链路（v0.5 Tool Call）
 
 1. 家具端：KWS 判定处于活跃会话窗口 → VAD 检测到用户开始说话 → 向 Server 发 `start` + 16k PCM 帧（600ms / 包）；
 2. Server 校验 `device_id / token` 后，把帧**整段透传**给 Worker 的 `ws://127.0.0.1:8090/v1/orchestrate`；Worker 再透传给 ASR `ws://127.0.0.1:9100/v1/asr/stream`；ASR 的 `partial` → Worker 改名为 `asr_partial` → Server 再透传 → 家具端；
 3. 用户说完停顿 ≥ 800ms，家具端 VAD 自动发 `end` → **家具端暂停语音检测** → ASR 回 `final`（Worker 改名 `asr_final`）+ `eos`，Server 透传给家具端；
-4. Worker 拿到 `asr_final` 文本后，异步调用 `worker/config.yaml` 中配置的云端 LLM API，等待结果，然后通过同一条 WS 把 `llm_result` 推回 Server，Server 再透传给家具端；
-5. 家具端收到 `llm_result` 后打印回答，**恢复语音检测**，等待下一轮对话；
-6. 用户继续说下一句 → 家具端复用同一条 WS 再次 `start` → 进入下一轮对话。
+4. Worker 拿到 `asr_final` 文本后，异步调用云端 LLM API（**携带设备上下文 + Tool Schema**），若 LLM 判断需要控制设备则返回 `tool_calls`（如 `control_device`）；
+5. Worker 将 `tool_calls` 封装为 `device_command` 事件，通过 WS 发送给 Server；
+6. Server 拦截 `device_command`，调用 DeviceService 更新数据库设备状态 → 回复 `device_command_result`（成功/失败）给 Worker；
+7. Worker 将 tool 执行结果回传 LLM 进行**二次调用**，LLM 生成自然语言回复（如"好的，已为您打开客厅灯"），通过 `llm_result` 推回 Server，Server 透传给家具端；
+8. 家具端收到 `llm_result` 后打印回答，**恢复语音检测**，等待下一轮对话。
 
 ## 技术栈
 
@@ -77,7 +79,7 @@
 | 家具端 `furniture/` | PC 端：Python + `webrtcvad`（默认）；硬件可选 ESP32 / 树莓派；唤醒词可选 openWakeWord / Porcupine | 音频走 WebSocket 到 server；设备控制走 MQTT 到 server。**不直连 worker / model** |
 | 客户端 `client/` | Android（Kotlin + Jetpack Compose） | HTTP / WebSocket 到 server；只对 server 一个端点 |
 | 服务器 `server/` | Go 1.22 标准库 `net/http` + `gorilla/websocket` + `go-sql-driver/mysql` + `go-redis/v9` + `golang-jwt/v5` + `golang.org/x/crypto` | 中枢：接入家具端 / 客户端，转发到 worker，落库与 MQTT 设备控制 |
-| Worker `worker/` | Go 1.22 + `gorilla/websocket` + `gopkg.in/yaml.v3` | 大模型编排：对接 ASR / LLM / TTS，被 server 通过 WS 调用 |
+| Worker `worker/` | Go 1.22 + `gorilla/websocket` + `gopkg.in/yaml.v3` | 大模型编排：对接 ASR / LLM / TTS，**支持 OpenAI Function Calling（Tool Call）**，被 server 通过 WS 调用 |
 | 模型服务 `model/` | Python（FastAPI） | 仅提供模型推理服务，不参与业务逻辑：<br>• **流式 ASR**（FunASR paraformer-zh-streaming，`:9100`，WS `/v1/asr/stream`）<br>• **本地 TTS**（Piper huayan-medium，`:9200`，REST `/v1/tts/synthesize`）<br>由 worker 调用 |
 | 数据库 | MySQL 8 + Redis 7（已接入） | 由 server 持有连接，客户端不直接访问 |
 | 消息中间件 | MQTT broker（Mosquitto / EMQX，外部部署） | server 既是 publisher（下发控制）也是 subscriber（接收设备状态） |
@@ -141,11 +143,11 @@ System/
 │       └── handler/
 │           ├── config_compat.go                    # LoadConfig/DefaultConfig 向后兼容
 │           ├── health.go                           # /v1/health（worker/db/redis 状态）
-│           ├── voice.go                            # /v1/voice 家具 ↔ worker 双向纯透传
+│           ├── voice.go                            # /v1/voice（家具 ↔ worker 透传 + device_command 拦截 + 设备上下文推送）
 │           ├── auth.go                             # /api/v1/auth/register + /login
 │           └── device.go                           # /api/v1/devices/* 设备与状态 API
 │
-├── worker/                                         # Go Worker（大模型编排：ASR / LLM / TTS）
+├── worker/                                         # Go Worker（大模型编排 + Tool Call：ASR / LLM / TTS）
 │   ├── README.md
 │   ├── go.mod / go.sum
 │   ├── config.yaml                                 # ASR WS / LLM API / TTS HTTP 配置
@@ -153,7 +155,8 @@ System/
 │   └── internal/handler/
 │       ├── config.go                               # ASR/LLM/TTS 三段配置
 │       ├── health.go                               # /v1/health
-│       └── orchestrate.go                          # /v1/orchestrate（核心 AI 工作流）
+│       ├── orchestrate.go                          # /v1/orchestrate（核心 AI 工作流 + Tool Call）
+│       └── tools.go                                # Tool Schema 定义 + 设备上下文 + LLM 响应解析
 │
 ├── furniture/                                      # 家具端"小菲"（KWS + VAD + WS 长连接）
 │   ├── README.md                                   # 家具 ↔ server WS 协议契约
@@ -262,7 +265,24 @@ curl http://127.0.0.1:8080/v1/health
 
 也可不配大模型（worker 自动降级为纯 ASR 透传），仅测试 ASR 链路的启动方式不变。
 
-### 3. REST API 端点一览
+### 3. WS 协议消息类型一览
+
+#### 家具端 ↔ Server ↔ Worker 通用消息
+
+| 方向 | 类型 | 说明 |
+|---|---|---|
+| 家具→Server | `start` / binary / `end` / `ping` | 音频上行 |
+| Server→家具 | `pong` / `asr_partial` / `asr_final` / `eos` / `llm_result` / `llm_error` / `error` | 识别结果与回复下行 |
+
+#### Tool Call 扩展消息（v0.5 新增）
+
+| 方向 | 类型 | 说明 |
+|---|---|---|
+| Server→Worker | `device_info` | 会话开始时推送用户设备列表+状态（注入 LLM 上下文） |
+| Worker→Server | `device_command` | LLM 返回 tool_calls 时下发设备控制指令 |
+| Server→Worker | `device_command_result` | Server 执行设备控制后回传结果（成功/失败+消息） |
+
+### 4. REST API 端点一览
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
@@ -275,7 +295,7 @@ curl http://127.0.0.1:8080/v1/health
 
 > 鉴权方式：在请求头添加 `Authorization: Bearer <jwt_token>`
 
-### 4. 家具端测试（实时麦克风，含 LLM 多轮对话）
+### 4. 家具端测试（实时麦克风，含 LLM 多轮对话 + Tool Call）
 
 ```powershell
 # 实时麦克风：说话 → VAD 断句 → ASR 识别 → LLM 回复 → 恢复检测

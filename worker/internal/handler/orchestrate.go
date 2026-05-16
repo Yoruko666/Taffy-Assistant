@@ -22,6 +22,8 @@ import (
 //	  binary <16-bit LE PCM mono 字节流>
 //	  text   {"type":"end"}
 //	  text   {"type":"ping"}
+//	  text   {"type":"device_info","devices":[...],"scenes":[...]}   ← 新增：设备上下文
+//	  text   {"type":"device_command_result","tool_id":"...","success":true,"message":"..."}  ← 新增：指令执行结果
 //
 //	下行（worker → server）：
 //	  text   {"type":"asr_partial","text":"..."}
@@ -29,18 +31,18 @@ import (
 //	  text   {"type":"eos"}
 //	  text   {"type":"llm_result","text":"..."}
 //	  text   {"type":"llm_error","message":"..."}
+//	  text   {"type":"device_command","tool_id":"...","function":"control_device","params":{...}}  ← 新增：设备控制指令
 //	  text   {"type":"error","message":"..."}
 //	  text   {"type":"pong"}
-//
-// Worker 在内部做的事：
-//   - 把上游的 start / PCM / end 透传给本地 ASR（FunASR :9100 流式 WS）
-//   - 把 ASR 的 partial/final/eos 翻译为 asr_partial/asr_final/eos 返回上游
-//   - asr_final 触发异步调用云端 LLM，返回 llm_result / llm_error
-//   - 未来：asr_final 后并行调用 TTS / 解析设备指令
 type OrchestrateHandler struct {
 	cfg      *AppConfig
 	upgrader websocket.Upgrader
 	dialer   *websocket.Dialer
+
+	// 会话级设备上下文（由 Server 在会话开始时推送）
+	mu      sync.Mutex
+	devices []DeviceContext
+	scenes  []SceneContext
 }
 
 // NewOrchestrateHandler 构造 worker orchestrate handler。
@@ -119,6 +121,11 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return upConn.WriteMessage(websocket.TextMessage, b)
 	}
 
+	// 会话级设备上下文存储
+	var sessionDevices []DeviceContext
+	var sessionScenes []SceneContext
+	var sessionMu sync.Mutex
+
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
@@ -142,12 +149,45 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// 拦截 ping，自己回 pong（Server 不感知 worker 的保活细节）
-			if mt == websocket.TextMessage && isPing(data) {
-				_ = safeWriteUp(map[string]any{"type": "pong"})
-				continue
+			// 拦截非音频消息
+			if mt == websocket.TextMessage {
+				var ev map[string]any
+				if err := json.Unmarshal(data, &ev); err == nil {
+					t, _ := ev["type"].(string)
+
+					// 保活
+					if t == "ping" {
+						_ = safeWriteUp(map[string]any{"type": "pong"})
+						continue
+					}
+
+					// 拦截 device_info：保存设备上下文，不转发给 ASR
+					if t == "device_info" {
+						sessionMu.Lock()
+						raw, _ := json.Marshal(ev)
+						var info DeviceInfoEvent
+						if err := json.Unmarshal(raw, &info); err == nil {
+							sessionDevices = info.Devices
+							sessionScenes = info.Scenes
+							log.Info("device context received", "devices", len(sessionDevices), "scenes", len(sessionScenes))
+						}
+						sessionMu.Unlock()
+						continue
+					}
+
+					// 拦截 device_command_result：处理指令执行结果，触发二次 LLM 调用
+					if t == "device_command_result" {
+						var result DeviceCommandResultEvent
+						raw, _ := json.Marshal(ev)
+						if err := json.Unmarshal(raw, &result); err == nil {
+							go h.handleCommandResult(upConn, result, &writeMu, &sessionMu, &sessionDevices, &sessionScenes, log)
+						}
+						continue
+					}
+				}
 			}
 
+			// 其他消息（start / end / binary PCM）透传给 ASR
 			if err := asrConn.WriteMessage(mt, data); err != nil {
 				log.Warn("asr write err", "err", err)
 				return
@@ -192,13 +232,21 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// 收到 asr_final → 异步调用大模型（空文本则直接放行）
+			// 收到 asr_final → 异步调用大模型（带 Tool Calling）
 			if h.cfg != nil && h.cfg.LLM.URL != "" {
 				var ev map[string]any
 				if err := json.Unmarshal(out, &ev); err == nil {
 					if t, _ := ev["type"].(string); t == "asr_final" {
 						if text, ok := ev["text"].(string); ok && text != "" {
-							go h.handleLLMResult(upConn, text, &writeMu, log)
+							// 获取当前设备上下文快照
+							sessionMu.Lock()
+							devicesCopy := make([]DeviceContext, len(sessionDevices))
+							copy(devicesCopy, sessionDevices)
+							scenesCopy := make([]SceneContext, len(sessionScenes))
+							copy(scenesCopy, sessionScenes)
+							sessionMu.Unlock()
+
+							go h.handleLLMWithTools(upConn, text, &writeMu, devicesCopy, scenesCopy, log)
 						} else {
 							log.Info("asr_final empty text, skip llm")
 							writeMu.Lock()
@@ -222,10 +270,17 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Info("session done")
 }
 
-// handleLLMResult 调用大模型 API，将结果通过 ws 送回上游。
-func (h *OrchestrateHandler) handleLLMResult(conn *websocket.Conn, text string, writeMu *sync.Mutex, log *slog.Logger) {
+// handleLLMWithTools 调用大模型（带 Tool Calling），处理 tool_calls 结果。
+func (h *OrchestrateHandler) handleLLMWithTools(
+	conn *websocket.Conn,
+	userText string,
+	writeMu *sync.Mutex,
+	devices []DeviceContext,
+	scenes []SceneContext,
+	log *slog.Logger,
+) {
 	t0 := time.Now()
-	reply, err := h.callLLM(text)
+	resp, err := h.callLLMWithTools(userText, devices, scenes)
 	cost := time.Since(t0).Milliseconds()
 
 	if err != nil {
@@ -239,7 +294,91 @@ func (h *OrchestrateHandler) handleLLMResult(conn *websocket.Conn, text string, 
 		return
 	}
 
-	log.Info("llm ok", "cost_ms", cost, "reply_len", len(reply))
+	if len(resp.Choices) == 0 {
+		log.Warn("llm response has no choices", "cost_ms", cost)
+		writeMu.Lock()
+		_ = writeJSON(conn, map[string]any{
+			"type": "llm_result",
+			"text": "",
+		})
+		writeMu.Unlock()
+		return
+	}
+
+	choice := resp.Choices[0]
+	log.Info("llm ok", "cost_ms", cost, "finish_reason", choice.FinishReason, "has_tool_calls", len(choice.Message.ToolCalls) > 0)
+
+	// 如果 LLM 请求调用工具（设备控制），下发 device_command 给 Server
+	if len(choice.Message.ToolCalls) > 0 {
+		for _, tc := range choice.Message.ToolCalls {
+			log.Info("tool call requested", "function", tc.Function.Name, "args", tc.Function.Arguments, "tool_id", tc.ID)
+
+			writeMu.Lock()
+			_ = writeJSON(conn, DeviceCommandEvent{
+				Type:     "device_command",
+				ToolID:   tc.ID,
+				Function: tc.Function.Name,
+				Params:   json.RawMessage(tc.Function.Arguments),
+			})
+			writeMu.Unlock()
+		}
+		// 不立即发送 llm_result，等待 device_command_result 回来后再做二次调用
+		return
+	}
+
+	// 纯文本回复
+	writeMu.Lock()
+	_ = writeJSON(conn, map[string]any{
+		"type": "llm_result",
+		"text": choice.Message.Content,
+	})
+	writeMu.Unlock()
+}
+
+// handleCommandResult 处理 Server 返回的指令执行结果，触发二次 LLM 调用生成最终回复。
+func (h *OrchestrateHandler) handleCommandResult(
+	conn *websocket.Conn,
+	result DeviceCommandResultEvent,
+	writeMu *sync.Mutex,
+	sessionMu *sync.Mutex,
+	sessionDevices *[]DeviceContext,
+	sessionScenes *[]SceneContext,
+	log *slog.Logger,
+) {
+	log.Info("command result received", "tool_id", result.ToolID, "success", result.Success, "message", result.Message)
+
+	// 获取当前设备上下文快照
+	sessionMu.Lock()
+	devicesCopy := make([]DeviceContext, len(*sessionDevices))
+	copy(devicesCopy, *sessionDevices)
+	scenesCopy := make([]SceneContext, len(*sessionScenes))
+	copy(scenesCopy, *sessionScenes)
+	sessionMu.Unlock()
+
+	// 构建二次调用消息，将 tool result 喂回 LLM
+	resultContent := "执行成功"
+	if !result.Success {
+		resultContent = "执行失败: " + result.Message
+	} else if result.Message != "" {
+		resultContent = result.Message
+	}
+
+	t0 := time.Now()
+	reply, err := h.callLLMSecondRound(resultContent, result.ToolID, devicesCopy, scenesCopy)
+	cost := time.Since(t0).Milliseconds()
+
+	if err != nil {
+		log.Warn("second llm call failed", "err", err, "cost_ms", cost)
+		writeMu.Lock()
+		_ = writeJSON(conn, map[string]any{
+			"type":    "llm_error",
+			"message": err.Error(),
+		})
+		writeMu.Unlock()
+		return
+	}
+
+	log.Info("second llm ok", "cost_ms", cost, "reply_len", len(reply))
 	writeMu.Lock()
 	_ = writeJSON(conn, map[string]any{
 		"type": "llm_result",
@@ -248,7 +387,131 @@ func (h *OrchestrateHandler) handleLLMResult(conn *websocket.Conn, text string, 
 	writeMu.Unlock()
 }
 
-// callLLM 调用兼容 OpenAI Chat Completions 格式的大模型 API。
+// callLLMWithTools 首次调用 LLM，带 tools 参数。
+func (h *OrchestrateHandler) callLLMWithTools(text string, devices []DeviceContext, scenes []SceneContext) (*LLMResponse, error) {
+	cfg := &h.cfg.LLM
+
+	systemPrompt := BuildSystemPrompt(cfg.SystemPrompt, devices, scenes)
+
+	messages := []map[string]any{}
+	messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
+	messages = append(messages, map[string]any{"role": "user", "content": text})
+
+	body := map[string]any{
+		"model":    cfg.Model,
+		"messages": messages,
+		"stream":   false,
+		"tools":    BuildTools(),
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeout)*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result LLMResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if result.Error != nil && result.Error.Message != "" {
+		return nil, errors.New("llm api error: " + result.Error.Message)
+	}
+
+	return &result, nil
+}
+
+// callLLMSecondRound 二次调用 LLM，将 tool result 喂回，获取最终文本回复。
+func (h *OrchestrateHandler) callLLMSecondRound(toolResult string, toolID string, devices []DeviceContext, scenes []SceneContext) (string, error) {
+	cfg := &h.cfg.LLM
+
+	systemPrompt := BuildSystemPrompt(cfg.SystemPrompt, devices, scenes)
+
+	// 构建多轮对话：system → assistant(tool_call) → tool(result)
+	messages := []map[string]any{}
+	messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
+
+	// assistant 消息（含 tool_calls）
+	messages = append(messages, map[string]any{
+		"role": "assistant",
+		"tool_calls": []map[string]any{
+			{
+				"id":   toolID,
+				"type": "function",
+				"function": map[string]any{
+					"name":      "control_device",
+					"arguments": "{}",
+				},
+			},
+		},
+	})
+
+	// tool 消息（执行结果）
+	messages = append(messages, map[string]any{
+		"role":       "tool",
+		"tool_call_id": toolID,
+		"content":    toolResult,
+	})
+
+	body := map[string]any{
+		"model":    cfg.Model,
+		"messages": messages,
+		"stream":   false,
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeout)*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result LLMResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if result.Error != nil && result.Error.Message != "" {
+		return "", errors.New("llm api error: " + result.Error.Message)
+	}
+
+	if len(result.Choices) > 0 {
+		return result.Choices[0].Message.Content, nil
+	}
+	return "", errors.New("llm response has no choices")
+}
+
+// callLLM 调用兼容 OpenAI Chat Completions 格式的大模型 API（保留兼容）。
 func (h *OrchestrateHandler) callLLM(text string) (string, error) {
 	cfg := &h.cfg.LLM
 

@@ -13,8 +13,8 @@ llm:
   api_key: "sk-your-api-key-here"
   # 模型名称（可选，默认 gpt-3.5-turbo）
   model: "GLM-4-Flash-250414"
-  # System Prompt（可选，默认空）
-  system_prompt: "你是一个智能家居助手，请用中文简短回答用户的问题。"
+  # System Prompt 基础部分（Worker 会自动追加用户设备列表和控制规则）
+  system_prompt: "你是「小菲」，一个智能家居语音助手。请用中文简短回答用户的问题。"
   # 请求超时秒数（可选，默认 30）
   timeout: 30
 
