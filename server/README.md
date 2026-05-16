@@ -173,10 +173,10 @@ go get golang.org/x/crypto
 
 ```powershell
 # 首次运行：建库建表
-mysql -u root -p < migrations/001_init.sql
+Get-Content migrations/001_init.sql | mysql -u root -p
 
 # 可选：插入测试数据
-mysql -u root -p < migrations/002_seed.sql
+Get-Content migrations/002_seed.sql | mysql -u root -p
 ```
 
 > LLM / ASR / TTS 的所有配置（API Key、URL、模型名等）已搬到 [`../worker/config.yaml`](../worker/config.yaml)。Server 不再持有 `LLM_API_KEY`。
@@ -210,7 +210,7 @@ mysql -u root -p < migrations/002_seed.sql
    ```powershell
    cd server
    # 首次运行先初始化数据库
-   mysql -u root -p < migrations/001_init.sql
+   Get-Content migrations/001_init.sql | mysql -u root -p
    # 修改 config.yaml 中的 mysql.password
    $env:PORT = "8080"
    $env:WORKER_WS_URL = "ws://127.0.0.1:8090/v1/orchestrate"

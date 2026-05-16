@@ -247,8 +247,8 @@ cd server
 
 # 初始化数据库（首次运行）
 # 1. 先启动 MySQL，然后执行迁移脚本：
-mysql -u root -p < migrations/001_init.sql   # 建库建表
-mysql -u root -p < migrations/002_seed.sql    # 可选：插入测试数据
+Get-Content migrations/001_init.sql | mysql -u root -p   # 建库建表
+Get-Content migrations/002_seed.sql | mysql -u root -p   # 可选：插入测试数据
 
 # 2. 修改 config.yaml 中的 mysql.password 和 jwt.secret
 
