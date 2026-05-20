@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import sys
+from datetime import datetime
+from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -126,6 +129,7 @@ async def receiver(
     ws,
     stop: asyncio.Event,
     llm_done: asyncio.Event,
+    output_dir: Path,
 ) -> None:
     """接收服务端事件，输出简洁的对话格式。
 
@@ -145,13 +149,31 @@ async def receiver(
 
             if t in ("final", "asr_final"):
                 print(f"用户：{cur}")
-            elif t == "llm_result":
+            elif t in ("llm_result", "reply"):
                 if cur:
                     print(f"小菲：{cur}")
                 llm_done.set()
             elif t == "llm_error":
-                print(f"小菲：出错了（{cur}）")
+                err_msg = evt.get("message", cur)
+                print(f"小菲：出错了（{err_msg}）")
                 llm_done.set()
+            elif t == "tts_audio":
+                b64_data = evt.get("data", "")
+                if b64_data:
+                    raw = base64.b64decode(b64_data)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    out_path = output_dir / f"tts_{ts}.wav"
+                    out_path.write_bytes(raw)
+                    print(f"[tts] saved: {out_path}")
+            elif t == "device_done":
+                device_name = evt.get("device", "?")
+                action = evt.get("action", "?")
+                print(f"[device] {device_name} {action} done")
+            elif t in ("pong", "eos"):
+                pass
+            elif t == "error":
+                err_msg = evt.get("message", "")
+                print(f"[error] {err_msg}")
     except websockets.ConnectionClosed:
         pass
     finally:
@@ -338,7 +360,9 @@ async def main_async(args: argparse.Namespace) -> int:
     stop = asyncio.Event()
     # llm_done：receiver 收到 llm_result 后设置，stream_live 等待后继续
     llm_done = asyncio.Event()
-    recv_task = asyncio.create_task(receiver(ws, stop, llm_done))
+    output_dir = Path(__file__).resolve().parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    recv_task = asyncio.create_task(receiver(ws, stop, llm_done, output_dir))
 
     try:
         wakeword = AlwaysOnWakeWord()

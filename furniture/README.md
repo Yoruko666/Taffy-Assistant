@@ -60,6 +60,37 @@ python furniture/mock_furniture.py --list-devices
 | Server→家具 | text | `{"type":"eos"}`（本段结束，连接保持） |
 | Server→家具 | text | `{"type":"llm_result","text":"..."}`（**M2 新增**：大模型回答） |
 | Server→家具 | text | `{"type":"llm_error","message":"..."}`（**M2 新增**：大模型调用失败） |
+| Server→家具 | text | `{"type":"reply","text":"..."}`（**M3**：大模型回答） |
+| Server→家具 | text | `{"type":"device_done","device":"...","action":"..."}`（**M3**：设备执行完成） |
+| Server→家具 | text | `{"type":"tts_audio","format":"wav","data":"<base64>"}`（**M3**：语音回播） |
 | Server→家具 | text | `{"type":"error","message":"..."}`（其他错误） |
 
 > `mock_furniture.py` 内部用 `asyncio.Event` 同步：`stream_live`（VAD + 上行）发完 `end` 后等待 `llm_done` 事件，`receiver` 收到 `llm_result` 后设置该事件，恢复 VAD。
+
+---
+
+## 普通设备模拟器 `mock_devices.py`
+
+用于模拟灯/空调/窗帘等**仅 MQTT 控制**的普通设备。
+
+### 用法
+
+```powershell
+# 连接 MQTT Broker（默认 localhost:1883）
+python furniture/mock_devices.py --devices light_living,aircon_bedroom,curtain_living
+
+# 无 MQTT Broker 时的降级模式
+python furniture/mock_devices.py --standalone --devices light_living,aircon_bedroom
+```
+
+### 设备与 Topic 约定
+
+设备命名格式：`<type>_<room>`，如 `light_living` / `aircon_bedroom` / `curtain_living`。
+
+| Topic | 方向 | 说明 | QoS |
+|---|---|---|---|
+| `shva/device/{id}/register` | Dev→Server | 上线注册 | 1 |
+| `shva/device/{id}/cmd` | Server→Dev | 下发控制指令 | 1 |
+| `shva/device/{id}/status` | Dev→Server | 状态上报 | 1 |
+| `shva/device/{id}/result` | Dev→Server | 指令执行结果 | 1 |
+| `shva/device/{id}/heartbeat` | Dev→Server | 心跳（30s） | 0 |
