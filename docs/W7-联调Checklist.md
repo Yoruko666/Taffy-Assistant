@@ -96,6 +96,19 @@ go run ./cmd/server     # :8080
 - 设备列表为空 → 检查 `002_seed.sql` 是否执行、`device.owner_id` 是否与请求的 `device_id` 关联
 - LLM 不调 tool（直接文字回复）→ 检查 system prompt 里设备列表是否为空（说明 ③ 没到）
 - 多轮对话第二次失败 → 检查 worker 是否对每个会话独立维护 `sessionToolCalls`，**禁止共享**
+- **鉴权拒绝**（HTTP 401，连不上 WS）→ 见下方"鉴权专项"
+
+### 鉴权专项（新增 P1-4）
+
+`/v1/voice` 在 WS Upgrade 之前会校验 `?device_id=...&token=...` 与 `devices` 表是否匹配。
+
+| 检查项 | 操作 | 绿灯标准 |
+|---|---|---|
+| ① 合法设备直连 | `mock_furniture.py --server "ws://127.0.0.1:8080/v1/voice?device_id=dev1&token=t1"` | server 日志 `voice auth ok`，握手成功 |
+| ② 错误 token | URL 改成 `token=wrong` | server 日志 `voice auth rejected: invalid credential`，HTTP 401 |
+| ③ 缺失 token | URL 改成 `?device_id=dev1` | HTTP 401 + 日志 `missing device_id or token` |
+| ④ 不存在的 device | `device_id=ghost&token=any` | HTTP 401 |
+| ⑤ 开发期降级 | `$env:SHVA_VOICE_AUTH="off"; go run ./cmd/server` | 启动时 `voice auth DISABLED ... do NOT use in production`，任何 device_id 都能进 |
 
 ---
 

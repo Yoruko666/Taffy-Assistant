@@ -294,6 +294,10 @@ curl http://127.0.0.1:8080/v1/health
 | `GET` | `/api/v1/devices/{id}/state` | JWT | 获取单个设备状态 |
 
 > 鉴权方式：在请求头添加 `Authorization: Bearer <jwt_token>`
+>
+> **WS `/v1/voice` 鉴权**：必须传 `?device_id=...&token=...`，server 会查 `devices` 表校验 token 是否匹配；
+> 默认要求设备已存在且 `status != unregistered`。开发期可设环境变量 `SHVA_VOICE_AUTH=off` 关闭校验（启动时会打 WARN）。
+> 演示账号：`device_id=dev1, token=t1`（属于用户 `13800000001`）。
 
 ### 4. 家具端测试（实时麦克风，含 LLM 多轮对话 + Tool Call）
 

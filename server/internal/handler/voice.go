@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,13 +22,13 @@ import (
 // VoiceHandler 实现家具端 ↔ Server WebSocket（/v1/voice）。
 //
 // 拆分后职责：
-//   - 接受家具端连接，做设备鉴权（device_id / token，M2 暂未启用）
+//   - 接受家具端连接，做设备鉴权（device_id / token，可由 SHVA_VOICE_AUTH=off 关闭）
 //   - 把家具端整条 WS 会话原样转发给 Worker（/v1/orchestrate）
 //   - 把 Worker 的响应原样回传给家具端
 //   - 拦截 Worker 下发的 device_command，调用 DeviceService 执行
 //   - 在会话建立时，查询用户设备列表推送给 Worker 作为上下文
 //
-// Server 不再做以下事情（已迁移到 Worker）：
+// Server 不再做以下事情（已迁移到 Worker）:
 //   - 直接对接 ASR
 //   - 翻译 ASR 事件类型
 //   - 调用云端 LLM
@@ -36,6 +38,12 @@ type VoiceHandler struct {
 	deviceSvc   *service.DeviceService
 	upgrader    websocket.Upgrader
 	dialer      *websocket.Dialer
+
+	// authEnabled 控制是否对家具端做 device_id/token 校验。
+	// - 默认 true：必须凭据通过才放行（生产/演示前置必备）。
+	// - 通过环境变量 SHVA_VOICE_AUTH=off / 0 / false 显式关闭，仅供本地开发期。
+	// - deviceSvc 为 nil（DB 未配置）时，鉴权也会自动跳过——日志会打 WARN。
+	authEnabled bool
 }
 
 // NewVoiceHandler 构造 voice handler，内部拨号到 worker。
@@ -44,9 +52,17 @@ func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService) *V
 	if cfg != nil {
 		workerURL = cfg.Worker.WSURL
 	}
+	authEnabled := parseAuthFlag(os.Getenv("SHVA_VOICE_AUTH"))
+	if !authEnabled {
+		slog.Warn("voice auth DISABLED via SHVA_VOICE_AUTH env, do NOT use in production")
+	}
+	if deviceSvc == nil {
+		slog.Warn("voice handler created without DeviceService, device credential check will be skipped")
+	}
 	return &VoiceHandler{
 		workerWSURL: workerURL,
 		deviceSvc:   deviceSvc,
+		authEnabled: authEnabled,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  64 * 1024,
 			WriteBufferSize: 64 * 1024,
@@ -60,6 +76,19 @@ func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService) *V
 	}
 }
 
+// parseAuthFlag 解析 SHVA_VOICE_AUTH 环境变量。
+// 空 / 未设置 → 默认开启鉴权（true）。
+// 显式 "off" / "0" / "false" / "no" → 关闭鉴权（false）。
+// 其他值 → 视为开启。
+func parseAuthFlag(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "0", "false", "no", "disable", "disabled":
+		return false
+	default:
+		return true
+	}
+}
+
 func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.URL.Query().Get("device_id")
 	token := r.URL.Query().Get("token")
@@ -68,7 +97,17 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = log.With("token_len", len(token))
 	}
 
-	// TODO(M3)：在此处校验 device_id / token，未通过直接 401 拒绝。
+	// 0) 设备鉴权 —— 必须在 WS Upgrade 之前完成，否则客户端拿到的不是 401 而是
+	// "握手成功 + 一帧 error 后被关闭"，体感差且抓不到 HTTP 状态码。
+	if err := h.authenticateDevice(r.Context(), deviceID, token, log); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "unauthorized",
+			"message": "invalid device_id or token",
+		})
+		return
+	}
 
 	// 1) 升级家具端连接
 	clientConn, err := h.upgrader.Upgrade(w, r, nil)
@@ -205,7 +244,45 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Info("session done")
 }
 
-// pushDeviceContext 查询设备所属用户的全部设备和场景，推送给 Worker。
+// authenticateDevice 校验家具端 WS 上行的 (device_id, token) 凭据。
+//
+// 决策矩阵：
+//
+//	authEnabled=false → 跳过，仅在缺失关键字段时打 debug 日志；
+//	deviceSvc==nil    → 跳过（DB 不可用），打 WARN；
+//	凭据有效          → 通过，info 日志；
+//	凭据无效          → 返回 ErrInvalidDeviceToken；
+//	DB 异常           → 返回原始 err（fail-close，让上层 401 拒绝避免脏会话）。
+func (h *VoiceHandler) authenticateDevice(parentCtx context.Context, deviceID, token string, log *slog.Logger) error {
+	if !h.authEnabled {
+		log.Debug("voice auth skipped (disabled by env)")
+		return nil
+	}
+	if h.deviceSvc == nil {
+		log.Warn("voice auth skipped (no DeviceService); set up MySQL or fix configuration before production")
+		return nil
+	}
+	if deviceID == "" || token == "" {
+		log.Warn("voice auth rejected: missing device_id or token")
+		return service.ErrInvalidDeviceToken
+	}
+
+	ctx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
+	defer cancel()
+
+	if _, err := h.deviceSvc.ValidateDeviceCredential(ctx, deviceID, token); err != nil {
+		if errors.Is(err, service.ErrInvalidDeviceToken) {
+			log.Warn("voice auth rejected: invalid credential")
+		} else {
+			log.Error("voice auth db error", "err", err)
+		}
+		return err
+	}
+	log.Info("voice auth ok")
+	return nil
+}
+
+
 func (h *VoiceHandler) pushDeviceContext(workerConn *websocket.Conn, deviceID string, log *slog.Logger) {
 	ctx, contextCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer contextCancel()
