@@ -50,6 +50,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.04.00")
     implementation(composeBom)
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
@@ -60,7 +61,16 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 
-    // WebSocket (OkHttp)
+    // Navigation Compose（页面切换：登录页 → 设备列表）
+    implementation("androidx.navigation:navigation-compose:2.7.7")
+
+    // DataStore Preferences（持久化 JWT）
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // Coroutines（IO 调度 + Flow）
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
+
+    // HTTP / WebSocket（OkHttp 同时承担 REST 和 WS，无需 Retrofit，保持轻量）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Core

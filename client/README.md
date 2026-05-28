@@ -29,9 +29,22 @@ client/
         │       └── themes.xml       # 基础主题（Compose 全权接管 UI）
         │
         └── java/com/shva/client/
-            ├── ShvaApplication.kt           # Application 入口
-            ├── MainActivity.kt              # 主界面（消息列表 + 连接状态）
+            ├── ShvaApplication.kt           # Application 入口（持有 TokenStore + ApiClient 单例）
+            ├── MainActivity.kt              # 仅承载 AppNav
+            ├── data/
+            │   ├── ApiClient.kt             # OkHttp 封装的 REST 客户端（auth + devices）
+            │   ├── Models.kt                # Device / DeviceState / DeviceCard / AuthToken / ApiResult
+            │   └── TokenStore.kt            # JWT 持久化（Jetpack DataStore）
             ├── ui/
+            │   ├── AppNav.kt                # Navigation Compose 顶层路由
+            │   ├── login/
+            │   │   ├── LoginScreen.kt       # 登录 / 注册（同页切换）
+            │   │   └── LoginViewModel.kt
+            │   ├── devices/
+            │   │   ├── DeviceListScreen.kt  # UC-03 设备列表 + 卡片开关
+            │   │   └── DeviceListViewModel.kt
+            │   ├── voice/
+            │   │   └── VoiceChatScreen.kt   # 语音对话（M3 阶段为 WS 消息流诊断）
             │   └── theme/
             │       └── Theme.kt             # Material 3 亮/暗主题
             └── websocket/
@@ -106,17 +119,26 @@ buildConfigField("int", "SERVER_PORT", "8080")
 
 修改后重新编译生效。
 
-## 当前能力（M2）
+## 当前能力（M3）
 
 | 功能 | 状态 |
 |---|---|
-| WebSocket 连接 Go Server | ✅ 被动接收消息 |
-| 消息列表展示 | ✅ 按类型区分颜色 |
-| 自动重连 | ✅ 断线 3s 后重试 |
-| 连接状态指示 | ✅ 顶部状态栏 |
-| REST API 调用 | 📅 M3 |
-| 设备管理 UI | 📅 M3 |
-| 用户登录 | 📅 M3 |
+| 用户注册 / 登录（手机号 + 密码） | ✅ POST /api/v1/auth/{register,login} |
+| JWT 持久化（DataStore） | ✅ 启动自动恢复登录态 |
+| 设备列表（按用户隔离） | ✅ GET /api/v1/devices + /devices/states |
+| 设备开关（卡片即点即生效） | ✅ PUT /api/v1/devices/state（乐观更新+失败回滚） |
+| 离线设备保护 | ✅ status=offline 的设备禁止控制 |
+| 401 自动登出 | ✅ token 过期回到登录页 |
+| 语音对话页（WS 监听） | ✅ 联调期诊断窗口，展示 asr_*/llm_*/tts_audio |
+| 录音按钮 / 文本对话上行 | 📅 M4 |
+| 设备详情页（亮度/温度滑块） | 📅 M4 |
+
+### 测试账号（来自 `server/migrations/002_seed.sql`）
+
+| 手机号 | 密码 | 设备数 |
+|---|---|---|
+| `13800000001` | `password123` | 6 |
+| `13800000002` | `password123` | 3 |
 
 ## 网络架构
 
@@ -132,9 +154,13 @@ Android App ──WSS──> Go Server :8080  (WebSocket 实时消息)
 | 库 | 用途 |
 |---|---|
 | `androidx.compose.material3` | Material 3 UI 组件 |
+| `androidx.compose.material:material-icons-extended` | 设备类型图标（灯/空调/窗帘…） |
 | `androidx.compose.ui` | Compose 基础 UI |
 | `androidx.activity:activity-compose` | Activity + Compose 集成 |
-| `com.squareup.okhttp3:okhttp:4.12.0` | WebSocket 客户端（含自动心跳） |
+| `androidx.navigation:navigation-compose:2.7.7` | 顶层页面路由 |
+| `androidx.datastore:datastore-preferences:1.1.1` | JWT 等少量键值持久化 |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0` | IO 调度 + Flow |
+| `com.squareup.okhttp3:okhttp:4.12.0` | REST + WebSocket 客户端 |
 
 > 与家具端的语音链路设计见：
 > - 家具端协议：[`furniture/README.md`](../furniture/README.md)
