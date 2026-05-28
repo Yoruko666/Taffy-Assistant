@@ -39,7 +39,7 @@ python furniture/mock_furniture.py --list-devices
 
 > 实现细节：`mock_furniture.py` 内部用 `asyncio.Event` 同步：`stream_live`（VAD + 上行）发完 `end` 后等待 `llm_done` 事件，`receiver` 收到 `llm_result` 后设置该事件，恢复 VAD。
 
-### 1.4 Tool Call 流程（v0.5+）
+### 1.4 Tool Call 流程
 
 当用户指令涉及设备控制（如"打开客厅灯"）时，LLM 会通过 Function Calling 机制调用 `control_device` 工具：
 

@@ -62,7 +62,7 @@
 - **断句归端侧**：`webrtcvad` 监听持续静音 ≥ 800ms 自动发 `end`，不靠 ASR 去切句，避免云端延迟放大。
 - **KWS 抽象**：`WakeWord` 基类预留接口；M2 用 `AlwaysOnWakeWord` 默认一直活跃，M3 替换为 openWakeWord / Porcupine 即可获得"嗨家具"式唤醒，**无需动主流程**。
 
-### 一次"打开客厅灯"的完整链路（v0.5 Tool Call）
+### 一次"打开客厅灯"的完整链路
 
 1. 家具端：KWS 判定处于活跃会话窗口 → VAD 检测到用户开始说话 → 向 Server 发 `start` + 16k PCM 帧（600ms / 包）；
 2. Server 校验 `device_id / token` 后，把帧**整段透传**给 Worker 的 `ws://127.0.0.1:8090/v1/orchestrate`；Worker 再透传给 ASR `ws://127.0.0.1:9100/v1/asr/stream`；ASR 的 `partial` → Worker 改名为 `asr_partial` → Server 再透传 → 家具端；
@@ -291,7 +291,7 @@ curl http://127.0.0.1:8080/v1/health
 | 家具→Server | `start` / binary / `end` / `ping` | 音频上行 |
 | Server→家具 | `pong` / `asr_partial` / `asr_final` / `eos` / `llm_result` / `tts_audio` / `llm_error` / `error` | 识别结果、文本回复、TTS 语音回复 |
 
-#### Tool Call 扩展消息（v0.5 新增）
+#### Tool Call 扩展消息
 
 | 方向 | 类型 | 说明 |
 |---|---|---|

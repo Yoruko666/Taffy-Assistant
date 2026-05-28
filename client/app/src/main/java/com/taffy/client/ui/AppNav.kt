@@ -23,7 +23,7 @@ import com.taffy.client.ui.voice.VoiceChatScreen
  * 路由表：
  *   - login   登录 / 注册（未登录默认）
  *   - devices 设备列表（已登录默认，UC-03）
- *   - voice   语音对话（M3 暂保留 WS 消息流监听，作为联调期诊断窗口）
+ *   - voice   语音对话（联调期 WS 消息流诊断窗口）
  */
 object Routes {
     const val LOGIN = "login"

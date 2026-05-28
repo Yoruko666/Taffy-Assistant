@@ -17,25 +17,27 @@ import (
 
 // OrchestrateHandler 实现 Server ↔ Worker 之间的 WS 端点（/v1/orchestrate）。
 //
-// 协议与"家具端 ↔ Server"完全一致，Server 只在中间做透传：
+// 上行（server → worker）：
 //
-//	上行（server → worker）：
-//	  text   {"type":"start", ...}
-//	  binary <16-bit LE PCM mono 字节流>
-//	  text   {"type":"end"}
-//	  text   {"type":"ping"}
-//	  text   {"type":"device_info","devices":[...],"scenes":[...]}   ← 新增：设备上下文
-//	  text   {"type":"device_command_result","tool_id":"...","success":true,"message":"..."}  ← 新增：指令执行结果
+//	text   {"type":"start", ...}
+//	binary <16-bit LE PCM mono 字节流>
+//	text   {"type":"end"}
+//	text   {"type":"ping"}
+//	text   {"type":"device_info","devices":[...],"scenes":[...]}
+//	text   {"type":"device_command_result","tool_id":"...","success":true,"message":"..."}
 //
-//	下行（worker → server）：
-//	  text   {"type":"asr_partial","text":"..."}
-//	  text   {"type":"asr_final","text":"..."}
-//	  text   {"type":"eos"}
-//	  text   {"type":"llm_result","text":"..."}
-//	  text   {"type":"llm_error","message":"..."}
-//	  text   {"type":"device_command","tool_id":"...","function":"control_device","params":{...}}  ← 新增：设备控制指令
-//	  text   {"type":"error","message":"..."}
-//	  text   {"type":"pong"}
+// 下行（worker → server）：
+//
+//	text   {"type":"asr_partial","text":"..."}
+//	text   {"type":"asr_final","text":"..."}
+//	text   {"type":"eos"}
+//	text   {"type":"llm_result","text":"..."}
+//	text   {"type":"llm_error","message":"..."}
+//	text   {"type":"device_command","tool_id":"...","function":"control_device","params":{...}}
+//	text   {"type":"error","message":"..."}
+//	text   {"type":"pong"}
+//
+// 协议结构体见 [protocol]。
 type OrchestrateHandler struct {
 	cfg      *AppConfig
 	upgrader websocket.Upgrader
@@ -72,7 +74,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
 	log := slog.With("path", "/v1/orchestrate", "device_id", deviceID, "session_id", sessionID, "remote", r.RemoteAddr)
 
-	// 1) 升级上游（server）连接
+	// 升级上游（server）连接
 	upConn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Error("upgrade failed", "err", err)
@@ -94,7 +96,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2) 拨号到 ASR
+	// 拨号到 ASR
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	asrConn, _, err := h.dialer.DialContext(ctx, asrURL, nil)
@@ -109,7 +111,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer asrConn.Close()
 	log.Info("asr connected", "asr", asrURL)
 
-	// 3) 双向转发 + LLM 处理
+	// 双向转发 + LLM 处理
 	stop := make(chan struct{})
 	var once sync.Once
 	closeStop := func() { once.Do(func() { close(stop) }) }
@@ -139,7 +141,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
-	// ---------- upstream -> asr ----------
+	// upstream -> asr
 	go func() {
 		defer wg.Done()
 		defer closeStop()
@@ -205,7 +207,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// ---------- asr -> upstream ----------
+	// asr -> upstream
 	go func() {
 		defer wg.Done()
 		defer closeStop()

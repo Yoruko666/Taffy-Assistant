@@ -102,16 +102,12 @@ func (s *DeviceService) DeleteDevice(ctx context.Context, deviceID string) error
 }
 
 // ValidateDeviceCredential 校验家具端 WS 上行的 (device_id, token) 凭据。
-//
 // 通过条件（全部满足）：
 //   - device_id 在 devices 表存在
 //   - 存储的 token 非空且与传入的 token 完全相等
-//   - 设备状态不是 'unregistered'（拒绝未激活的设备接入）
+//   - 设备状态不是 'unregistered'
 //
-// 任意一项不满足返回 [ErrInvalidDeviceToken]；
-// DB 查询本身的错误（如连接断开）原样返回，由 handler 决定是否 5xx。
-//
-// 性能：每次会话握手时调用一次，命中索引主键，开销极小。
+// 任意一项不满足返回 [ErrInvalidDeviceToken]；DB 查询错误原样返回。
 func (s *DeviceService) ValidateDeviceCredential(ctx context.Context, deviceID, token string) (*model.Device, error) {
 	if deviceID == "" || token == "" {
 		return nil, ErrInvalidDeviceToken

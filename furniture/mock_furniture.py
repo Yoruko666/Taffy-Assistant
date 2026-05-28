@@ -1,8 +1,6 @@
-"""Mock 家具端（PC 端模拟器） ———— 实时麦克风 → VAD → WS 上行测试。
+"""Mock 家具端（PC 端模拟器）：实时麦克风 → VAD → WS 上行测试。
 
-M2 行为变更：
-  - VAD 检测到句尾 end 后，暂停语音检测，等待大模型返回结果（llm_result）；
-  - 收到 llm_result 后恢复语音检测，继续下一轮对话。
+VAD 检测到句尾 end 后暂停采集，收到 llm_result 后恢复，形成自然的对话节奏。
 
 用法
 ----
@@ -203,10 +201,8 @@ async def stream_live(
 ) -> int:
     """从真实麦克风实时采集，VAD 断句后推送到 WS。
 
-    M2 行为：
-      - VAD 检测到 end 后暂停语音检测；
-      - 等待 llm_done 事件（由 receiver 在收到 llm_result 时设置）；
-      - 恢复语音检测，进入下一轮对话。
+    VAD end 后暂停采集，等待 llm_done（由 receiver 在收到 llm_result 时设置）后恢复，
+    进入下一轮对话。
     """
     try:
         import sounddevice as sd
@@ -310,7 +306,7 @@ async def stream_live(
                 await flush_segment_buf()
                 await send_end(ws)
                 end_count += 1
-                # M2：end 后暂停语音检测，等大模型结果
+                # end 后暂停语音检测，等待大模型结果
                 vad_paused = True
                 continue  # 不把当前帧计入 speaking 处理
 

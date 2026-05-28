@@ -12,22 +12,15 @@ import (
 )
 
 // DeviceCommandResult 设备指令的执行结果，由 voice handler 透传回 worker。
+// Message 是给 LLM 的中文反馈（成功或失败原因），用于二轮对话。
 type DeviceCommandResult struct {
 	Success bool
-	// Message 给 LLM 看的中文反馈句，例如 "已打开客厅的吊灯"。
-	// 失败场景里也会写明原因，供模型生成回复。
 	Message string
 }
 
 // ExecuteControlDevice 执行 Worker 下发的 control_device 指令：
-//  1. 解析参数（[protocol.ControlDeviceParams]）
-//  2. 校验设备存在 + 取当前状态
-//  3. 按 action 计算新状态
-//  4. UpdateDeviceState（含权限校验）
-//  5. 拼装中文反馈
-//
-// 任何错误都不会向上 panic，统一通过 [DeviceCommandResult] 返回，
-// 让 voice handler 不必关心具体业务分支。
+// 解析参数 → 校验设备 → 计算新状态 → UpdateDeviceState → 拼装中文反馈。
+// 任何错误都通过 [DeviceCommandResult] 返回，不会向上 panic。
 func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMessage) DeviceCommandResult {
 	var p protocol.ControlDeviceParams
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -37,7 +30,7 @@ func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMe
 		return DeviceCommandResult{Success: false, Message: "缺少 device_id 参数"}
 	}
 
-	// 业务上限制单次执行不要超过 5s（DB 慢查询 + 网络抖动余量）
+	// 单次执行硬上限 5s，避免 LLM 等待过久。
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -61,13 +54,13 @@ func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMe
 	return DeviceCommandResult{Success: true, Message: formatSuccessMessage(device, p.Action, state)}
 }
 
-// ExecuteActivateScene 执行场景激活（M4 待实现）。
+// ExecuteActivateScene 执行场景激活（暂未实现）。
 func (s *DeviceService) ExecuteActivateScene(_ context.Context, _ json.RawMessage) DeviceCommandResult {
 	return DeviceCommandResult{Success: false, Message: "场景激活功能暂未实现"}
 }
 
 // applyAction 把 action 反映到 state 上。
-// 返回非空字符串表示参数校验失败原因；返回 "" 表示成功。
+// 返回非空字符串表示参数校验失败；返回 "" 表示成功。
 func applyAction(state *model.DeviceState, p protocol.ControlDeviceParams) string {
 	switch p.Action {
 	case "turn_on":
@@ -106,7 +99,6 @@ func applyAction(state *model.DeviceState, p protocol.ControlDeviceParams) strin
 }
 
 // formatSuccessMessage 拼装 LLM 用的中文反馈句。
-// 例如 "已打开客厅的吊灯"、"卧室的空调温度已设为 26 度"。
 func formatSuccessMessage(device *model.Device, action string, state *model.DeviceState) string {
 	room := device.Room
 	if room != "" {

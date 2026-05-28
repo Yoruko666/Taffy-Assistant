@@ -21,7 +21,7 @@ type LLMConfig struct {
 	Timeout      int    `yaml:"timeout"` // 秒
 }
 
-// TTSConfig TTS 模型 HTTP 接入配置（M3 接入）。
+// TTSConfig TTS 模型 HTTP 接入配置。
 type TTSConfig struct {
 	URL string `yaml:"url"`
 }

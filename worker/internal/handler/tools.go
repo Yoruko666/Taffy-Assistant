@@ -1,21 +1,17 @@
 package handler
 
 import (
+	"strconv"
+
 	"taffy.local/pkg/protocol"
 )
 
-// ──────────────────────────── Tool 定义 ────────────────────────────
-// 采用 OpenAI Function Calling 格式，让大模型按需调用控制家具的指令。
-
-// BuildTools 构造发送给 LLM 的 tools 参数。
+// BuildTools 构造发送给 LLM 的 tools 参数（OpenAI Function Calling 格式）。
 //
-// 设计说明：
-//   - control_device 的所有动作参数（brightness/temperature/mode/position）
-//     **平铺**在顶层，与 server.executeControlDevice 的解析结构保持一致；
-//     不要再嵌套 params 子对象，否则 server 端拿不到字段。
-//   - activate_scene 暂未实现服务端逻辑（见 server.executeActivateScene），
-//     在此**先不暴露给 LLM**，避免模型误触发后回复"暂未实现"。
-//     待 server 侧补完场景执行后再放回 tools 列表（见 todo: 场景）。
+// control_device 的所有动作参数（brightness / temperature / mode / position）平铺在顶层，
+// 与 server 端 [protocol.ControlDeviceParams] 字段一一对应，请勿改成嵌套 params 子对象。
+//
+// activate_scene 服务端尚未实现，暂不暴露给 LLM，避免模型误触发后回复"暂未实现"。
 func BuildTools() []map[string]any {
 	return []map[string]any{
 		{
@@ -63,19 +59,16 @@ func BuildTools() []map[string]any {
 				},
 			},
 		},
-		// activate_scene：服务端未实现，暂不暴露给 LLM。
 	}
 }
-
-// ──────────────────────────── LLM 响应解析 ────────────────────────────
 
 // LLMResponse 表示 LLM Chat Completions 响应结构。
 type LLMResponse struct {
 	ID      string `json:"id"`
 	Choices []struct {
-		Index   int     `json:"index"`
-		Message LLMMessage `json:"message"`
-		FinishReason string `json:"finish_reason"`
+		Index        int        `json:"index"`
+		Message      LLMMessage `json:"message"`
+		FinishReason string     `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -102,33 +95,18 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"` // JSON string
 }
 
-// ──────────────────────────── 设备指令事件 ────────────────────────────
-//
-// 以下结构体作为 protocol 包的本地别名保留，保证 worker 内部命名习惯不变。
-// 真正的字段定义在 [protocol]，请勿在此处再增加字段。
+// 以下结构体作为 protocol 包的本地别名，保持 worker 内部命名习惯不变。
+// 字段定义在 [protocol]，请勿在此处再加字段。
 
-// ControlDeviceParams 见 [protocol.ControlDeviceParams]。
-type ControlDeviceParams = protocol.ControlDeviceParams
-
-// ActivateSceneParams 见 [protocol.ActivateSceneParams]。
-type ActivateSceneParams = protocol.ActivateSceneParams
-
-// DeviceCommandEvent 见 [protocol.DeviceCommandEvent]。
-type DeviceCommandEvent = protocol.DeviceCommandEvent
-
-// DeviceCommandResultEvent 见 [protocol.DeviceCommandResultEvent]。
-type DeviceCommandResultEvent = protocol.DeviceCommandResultEvent
-
-// ──────────────────────────── 设备上下文 ────────────────────────────
-
-// DeviceContext 见 [protocol.DeviceContext]。
-type DeviceContext = protocol.DeviceContext
-
-// SceneContext 见 [protocol.SceneContext]。
-type SceneContext = protocol.SceneContext
-
-// DeviceInfoEvent 见 [protocol.DeviceInfoEvent]。
-type DeviceInfoEvent = protocol.DeviceInfoEvent
+type (
+	ControlDeviceParams      = protocol.ControlDeviceParams
+	ActivateSceneParams      = protocol.ActivateSceneParams
+	DeviceCommandEvent       = protocol.DeviceCommandEvent
+	DeviceCommandResultEvent = protocol.DeviceCommandResultEvent
+	DeviceContext            = protocol.DeviceContext
+	SceneContext             = protocol.SceneContext
+	DeviceInfoEvent          = protocol.DeviceInfoEvent
+)
 
 // BuildSystemPrompt 根据设备上下文动态构建 system prompt。
 func BuildSystemPrompt(basePrompt string, devices []DeviceContext, scenes []SceneContext) string {
@@ -148,16 +126,16 @@ func BuildSystemPrompt(basePrompt string, devices []DeviceContext, scenes []Scen
 			}
 			prompt += "- " + d.DeviceID + " | " + d.Room + " " + d.Name + " (" + d.Type + ") 状态:" + status
 			if d.Brightness != nil {
-				prompt += " 亮度:" + intPtrToStr(d.Brightness) + "%"
+				prompt += " 亮度:" + strconv.Itoa(*d.Brightness) + "%"
 			}
 			if d.Temperature != nil {
-				prompt += " 温度:" + intPtrToStr(d.Temperature) + "°C"
+				prompt += " 温度:" + strconv.Itoa(*d.Temperature) + "°C"
 			}
 			if d.Mode != "" {
 				prompt += " 模式:" + d.Mode
 			}
 			if d.Position != nil {
-				prompt += " 开合度:" + intPtrToStr(d.Position) + "%"
+				prompt += " 开合度:" + strconv.Itoa(*d.Position) + "%"
 			}
 			prompt += "\n"
 		}
@@ -166,7 +144,7 @@ func BuildSystemPrompt(basePrompt string, devices []DeviceContext, scenes []Scen
 	if len(scenes) > 0 {
 		prompt += "\n## 用户预设场景\n"
 		for _, s := range scenes {
-			prompt += "- 场景ID:" + int64ToStr(s.SceneID) + " " + s.Name + "\n"
+			prompt += "- 场景ID:" + strconv.FormatInt(s.SceneID, 10) + " " + s.Name + "\n"
 		}
 	}
 
@@ -178,52 +156,4 @@ func BuildSystemPrompt(basePrompt string, devices []DeviceContext, scenes []Scen
 	prompt += "5. 回复要简洁自然，像一个语音助手在说话。\n"
 
 	return prompt
-}
-
-func intPtrToStr(p *int) string {
-	if p == nil {
-		return "?"
-	}
-	return intToStr(*p)
-}
-
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	sign := ""
-	if n < 0 {
-		sign = "-"
-		n = -n
-	}
-	digits := make([]byte, 0, 12)
-	for n > 0 {
-		digits = append(digits, byte('0'+n%10))
-		n /= 10
-	}
-	for i, j := 0, len(digits)-1; i < j; i, j = i+1, j-1 {
-		digits[i], digits[j] = digits[j], digits[i]
-	}
-	return sign + string(digits)
-}
-
-
-func int64ToStr(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	sign := ""
-	if n < 0 {
-		sign = "-"
-		n = -n
-	}
-	digits := make([]byte, 0, 20)
-	for n > 0 {
-		digits = append(digits, byte('0'+n%10))
-		n /= 10
-	}
-	for i, j := 0, len(digits)-1; i < j; i, j = i+1, j-1 {
-		digits[i], digits[j] = digits[j], digits[i]
-	}
-	return sign + string(digits)
 }

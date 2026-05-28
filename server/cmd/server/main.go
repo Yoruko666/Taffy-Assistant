@@ -1,18 +1,16 @@
-// Command server 是 Taffy 系统的 Go 中枢服务。
-//
-// 拆分后职责：
+// Command server 是 Taffy 系统的 Go 中枢服务：
 //   - 接收家具端 / 客户端的接入（WS / REST）
-//   - 把家具端的语音 WS 会话整段转发给 Worker（大模型编排进程）
+//   - 把家具端的语音 WS 会话整段转发给 Worker
 //   - 用户/设备 CRUD、对话历史落库、MQTT 设备控制
 //
-// Server **不直接** 接 ASR / LLM / TTS，相关配置已搬到 worker/config.yaml。
+// 不直接接 ASR / LLM / TTS（已下沉到 worker/）。
 //
 // 启动：
 //
 //	# 默认监听 :8080，读取同目录 config.yaml
 //	go run ./cmd/server
 //
-//	# 自定义
+//	# 自定义端口 / 配置 / Worker 地址
 //	$env:PORT="8080"
 //	$env:CONFIG_PATH="config.yaml"
 //	$env:WORKER_WS_URL="ws://127.0.0.1:8090/v1/orchestrate"
@@ -51,7 +49,7 @@ func main() {
 	}
 	slog.Info("config ready", "worker_ws", cfg.Worker.WSURL)
 
-	// ──────────── 初始化 MySQL ────────────
+	// MySQL
 	db, err := database.InitMySQL(&cfg.MySQL)
 	if err != nil {
 		slog.Warn("mysql init failed, running without database", "err", err)
@@ -59,7 +57,7 @@ func main() {
 		defer db.Close()
 	}
 
-	// ──────────── 初始化 Redis ────────────
+	// Redis
 	rdb, err := database.InitRedis(&cfg.Redis)
 	if err != nil {
 		slog.Warn("redis init failed, running without cache", "err", err)
@@ -67,7 +65,7 @@ func main() {
 		defer rdb.Close()
 	}
 
-	// ──────────── 组装依赖 ────────────
+	// 依赖装配
 	jwtMW := middleware.NewJWTMiddleware(&cfg.JWT, rdb)
 
 	var userSvc *service.UserService
@@ -85,7 +83,7 @@ func main() {
 	deviceHandler := handler.NewDeviceHandler(deviceSvc)
 	voiceHandler := handler.NewVoiceHandler(cfg, deviceSvc)
 
-	// ──────────── 路由注册 ────────────
+	// 路由注册
 	mux := http.NewServeMux()
 
 	// 健康检查

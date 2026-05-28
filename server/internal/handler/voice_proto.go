@@ -13,16 +13,11 @@ import (
 	"taffy.local/pkg/protocol"
 )
 
-// 本文件汇集 /v1/voice WebSocket 透传链路上用到的"协议级"工具函数：
-// 与具体业务（设备、用户）无关，仅做编码 / 解码 / 控制流判定。
-//
-// 把它们从 voice.go 里抽出来，是为了让 VoiceHandler.ServeHTTP
-// 只关心"路由 + 鉴权 + 透传循环"三件事。
+// 本文件汇集 /v1/voice WebSocket 透传链路上的协议级工具函数：
+// 仅做编码 / 解码 / 控制流判定，不依赖具体业务。
 
 // parseAuthFlag 解析 TAFFY_VOICE_AUTH 环境变量。
-// 空 / 未设置 → 默认开启鉴权（true）。
-// 显式 "off" / "0" / "false" / "no" → 关闭鉴权（false）。
-// 其他值 → 视为开启。
+// 显式 "off"/"0"/"false"/"no" 关闭鉴权；其他（含未设置）开启。
 func parseAuthFlag(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "off", "0", "false", "no", "disable", "disabled":

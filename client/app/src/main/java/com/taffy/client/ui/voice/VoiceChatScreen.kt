@@ -38,12 +38,10 @@ import com.taffy.client.websocket.ServerWebSocket
 import kotlinx.coroutines.launch
 
 /**
- * 语音对话页（M3 阶段保留为 WS 消息流诊断窗口）。
+ * 语音对话页：订阅 server WS 推送的事件流（asr_partial / asr_final /
+ * llm_result / device_command_result / tts_audio …），用于联调期肉眼验证全链路。
  *
- * 直接订阅 server 推送的事件流（asr_partial / asr_final / llm_result / device_command_result / tts_audio …），
- * 用于联调期肉眼验证全链路。
- *
- * M4 路线图：在此页面加入 录音按钮 + 文本输入框 → 走 /v1/voice 上行。
+ * 后续会加入录音按钮 + 文本输入框走 /v1/voice 上行。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

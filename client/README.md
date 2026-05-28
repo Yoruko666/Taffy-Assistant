@@ -44,7 +44,7 @@ client/
             │   │   ├── DeviceListScreen.kt  # UC-03 设备列表 + 卡片开关
             │   │   └── DeviceListViewModel.kt
             │   ├── voice/
-            │   │   └── VoiceChatScreen.kt   # 语音对话（M3 阶段为 WS 消息流诊断）
+            │   │   └── VoiceChatScreen.kt   # 语音对话（联调期 WS 消息流诊断窗口）
             │   └── theme/
             │       └── Theme.kt             # Material 3 亮/暗主题
             └── websocket/
@@ -119,7 +119,7 @@ buildConfigField("int", "SERVER_PORT", "8080")
 
 修改后重新编译生效。
 
-## 当前能力（M3）
+## 当前能力
 
 | 功能 | 状态 |
 |---|---|
@@ -130,8 +130,8 @@ buildConfigField("int", "SERVER_PORT", "8080")
 | 离线设备保护 | ✅ status=offline 的设备禁止控制 |
 | 401 自动登出 | ✅ token 过期回到登录页 |
 | 语音对话页（WS 监听） | ✅ 联调期诊断窗口，展示 asr_*/llm_*/tts_audio |
-| 录音按钮 / 文本对话上行 | 📅 M4 |
-| 设备详情页（亮度/温度滑块） | 📅 M4 |
+| 录音按钮 / 文本对话上行 | 📅 计划中 |
+| 设备详情页（亮度/温度滑块） | 📅 计划中 |
 
 ### 测试账号（来自 `server/migrations/002_seed.sql`）
 
@@ -144,7 +144,7 @@ buildConfigField("int", "SERVER_PORT", "8080")
 
 ```
 Android App ──WSS──> Go Server :8080  (WebSocket 实时消息)
-            ──HTTPS─> Go Server :8080  (REST API，M3 接入)
+            ──HTTPS─> Go Server :8080  (REST API)
 ```
 
 客户端**只连接 Go Server 一个端点**，所有 AI 能力由 Go Server 内部编排。客户端不录音、不上传音频。

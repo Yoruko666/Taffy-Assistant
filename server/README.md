@@ -1,16 +1,16 @@
 # Server（Go 业务服务器）
 
-> Taffy 业务后端，使用 Go 实现。**整个系统的中枢**，但**不再**承担大模型编排——AI 编排已从 v0.3 起拆到 [`worker/`](../worker)。
+> Taffy 业务后端，使用 Go 实现。系统中枢，负责接入与转发，**不直接**承担大模型编排（已下沉到 [`worker/`](../worker)）。
 >
-> **职责**：
+> 职责：
 >
-> - 客户端 JWT 鉴权、用户/设备管理、对话历史落库（MySQL + Redis，已接入）
+> - 客户端 JWT 鉴权、用户/设备管理、对话历史落库（MySQL + Redis）
 > - 家具端音频 WebSocket 接入与转发到 Worker
 > - 设备状态 CRUD（开/关、温度、亮度、开合度等）
-> - **拦截 Worker 的 `device_command` 事件，执行设备控制（更新 DB + 转发），回传结果给 Worker**
-> - **会话建立时推送用户设备列表与状态（`device_info`）给 Worker，供 LLM 上下文注入**
-> - 通过 MQTT 下发设备控制指令、接收设备状态（M3）
-> - 客户端 App 的 REST + WS 状态推送（M3）
+> - 拦截 Worker 的 `device_command` 事件执行设备控制（更新 DB + 转发），结果回传 Worker
+> - 会话建立时推送用户设备列表与状态（`device_info`）给 Worker，供 LLM 上下文注入
+> - 通过 MQTT 下发设备控制指令、接收设备状态（计划中）
+> - 客户端 App 的 REST + WS 状态推送（计划中）
 
 ---
 
@@ -22,18 +22,15 @@
   扬声器 ◀──事件流──     │  ▲                       │  ▲                  ──HTTPS──▶ 云端 LLM
                          │  │ asr_partial/asr_final │  │  (含 Tool Call)   ──HTTP───▶ TTS :9200
                          │  │ llm_result/llm_error  │  │
-                         │  │ device_command ────────┼──┘  (v0.5: Worker→Server 设备控制)
-                         │  │ device_command_result ─┘     (v0.5: Server→Worker 控制结果)
-                         │  │ device_info ──────────┘     (v0.5: Server→Worker 设备上下文)
+                         │  │ device_command ────────┼──┘
+                         │  │ device_command_result ─┘
+                         │  │ device_info ──────────┘
                          │
-                         ├──MQTT───▶ EMQX ──▶ 其他家具（灯/空调/窗帘）  (M3)
-                         └──MySQL/Redis──▶ 用户/设备/会话历史            (已接入)
-
-
-[客户端 App] ──HTTPS / WSS──▶ Go Server 的 REST + 状态推送（不走音频）
+                         ├──MQTT───▶ EMQX ──▶ 其他家具（灯/空调/窗帘）  (计划中)
+                         └──MySQL/Redis──▶ 用户/设备/会话历史
 ```
 
-> Server **不直接**调 ASR / LLM / TTS。所有 AI 能力都通过 Worker 间接获取。
+> Server **不直接**调 ASR / LLM / TTS，所有 AI 能力都通过 Worker 间接获取。
 
 ---
 
@@ -54,16 +51,16 @@
 
 | 端点 | 协议 | 调用方 | 用途 |
 |---|---|---|---|
-| `/v1/voice` | **WS** | 家具端 | **核心**：音频上行 / 识别文本与回复下行（透传到 Worker）/ device_command 拦截执行 / device_info 上下文推送 |
+| `/v1/voice` | **WS** | 家具端 | 核心：音频上行 / 识别文本与回复下行（透传到 Worker）/ device_command 拦截执行 / device_info 上下文推送 |
 | `/api/v1/auth/register` | HTTPS | 客户端 App | 用户注册，返回 JWT |
 | `/api/v1/auth/login` | HTTPS | 客户端 App | 用户登录，返回 JWT |
 | `/api/v1/devices` | HTTPS | 客户端 App | 获取当前用户所有设备（JWT 鉴权） |
 | `/api/v1/devices/states` | HTTPS | 客户端 App | 获取当前用户所有设备状态（JWT 鉴权） |
 | `/api/v1/devices/state` | HTTPS | 客户端 App | 更新设备状态（PUT，JWT 鉴权） |
 | `/api/v1/devices/{id}/state` | HTTPS | 客户端 App | 获取单个设备状态（JWT 鉴权） |
-| `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理（M3） |
-| `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史（M3） |
-| `/ws` | WSS | 客户端 App | 设备状态实时推送（M3） |
+| `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理（计划中） |
+| `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史（计划中） |
+| `/ws` | WSS | 客户端 App | 设备状态实时推送（计划中） |
 | `/v1/health` | HTTP | 运维 / 客户端 | 健康检查（含 db / redis 状态） |
 
 ---
@@ -72,47 +69,33 @@
 
 ### 协议
 
-详见 [`furniture/README.md`](../furniture/README.md) "协议：家具端 ↔ Go Server WebSocket" 章节。
+家具端 ↔ Server 协议详见 [`furniture/README.md`](../furniture/README.md) §3.1。
 
-**单 WS 多轮对话**：家具端在一条连接内可以循环发 N 组 `start / [PCM...] / end`，每组触发一次 `asr_final + eos`，连接不断开，直到家具端主动关闭。
+> 单 WS 多轮对话：家具端在一条连接内可以循环发 N 组 `start / [PCM...] / end`，每组触发一次 `asr_final + eos`，连接不断开。
 
-| 方向 | 帧类型 | 内容 |
-|---|---|---|
-| 家具→Server | text | `{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}` |
-| 家具→Server | binary | 16-bit LE PCM mono 字节流，每 ~600ms 一包 |
-| 家具→Server | text | `{"type":"end"}`（端侧 VAD 触发，每轮 1 次） |
-| 家具→Server | text | `{"type":"ping"}` |
-| Server→家具 | text | `{"type":"pong"}` |
-| Server→家具 | text | `{"type":"asr_partial","text":"..."}` |
-| Server→家具 | text | `{"type":"asr_final","text":"..."}` |
-| Server→家具 | text | `{"type":"eos"}` |
-| Server→家具 | text | `{"type":"llm_result","text":"..."}` |
-| Server→家具 | text | `{"type":"llm_error","message":"..."}` |
-| Server→家具 | text | `{"type":"error","message":"..."}` |
+### Server ↔ Worker 内部协议
 
-**v0.5 新增：Tool Call 扩展协议（Server ↔ Worker 间）**
-
-> 以下事件 `type` 字段值与对应 Go 结构体均集中定义在 [`pkg/protocol/events.go`](../pkg/protocol/events.go)（`module taffy.local/pkg/protocol`），server 与 worker 引用同一份 source of truth。新增 / 重命名事件类型时，请先改 protocol 包再同时修改两端。
+> 事件 `type` 字段值与对应 Go 结构体集中定义在 [`pkg/protocol/events.go`](../pkg/protocol/events.go)，server 与 worker 引用同一份。新增 / 重命名事件类型时，请先改 protocol 包再同时修改两端。
 
 | 方向 | 帧类型 | 内容 |
 |---|---|---|
-| Server→Worker | text | `{"type":"device_info","devices":[...]}`  — 会话建立后推送用户设备列表+状态 |
+| Server→Worker | text | `{"type":"device_info","devices":[...]}` — 会话建立后推送用户设备列表+状态 |
 | Worker→Server | text | `{"type":"device_command","tool_id":"...","function":{"name":"control_device","arguments":"{...}"}}` |
 | Server→Worker | text | `{"type":"device_command_result","tool_id":"...","success":true,"message":"..."}` |
 
-### 处理逻辑（v0.5 Tool Call 后）
+### 处理逻辑
 
-Server 的 `/v1/voice` 不再做事件翻译、不再调 LLM，**改为 WS 透传 + device_command 拦截执行 + 设备上下文推送 + 会话日志**：
+Server 的 `/v1/voice` 只做透传 + device_command 拦截执行 + 设备上下文推送 + 会话日志：
 
-1. 家具端连上 → Server 校验 `device_id` / `token`（M3 启用）
-2. Server 拨号到 Worker `/v1/orchestrate`，把 `device_id` 通过 query 透传过去
-3. Server 查询该用户的所有设备+状态，通过 `device_info` 事件推送给 Worker（供 LLM 上下文注入）
+1. 家具端连上 → Server 校验 `device_id` / `token`
+2. Server 拨号到 Worker `/v1/orchestrate`，把 `device_id` 通过 query 透传
+3. Server 查询该用户的所有设备 + 状态，通过 `device_info` 事件推送给 Worker
 4. 双向透传：家具端的 text/binary 原样转发给 Worker；Worker 的回包原样回家具端
-5. **新增**：Worker 下发 `device_command` 时，Server 拦截并调用 DeviceService 执行设备控制（更新 DB），然后回复 `device_command_result`
-6. 关键事件（`asr_final` / `llm_result` / `device_command` / `error`）在 Server 侧打一行 INFO 日志
-7. 任意一边断开 → 关闭另一边 → 写对话历史（M3）
+5. Worker 下发 `device_command` 时，Server 拦截并调用 DeviceService 执行（更新 DB），然后回复 `device_command_result`
+6. 关键事件（`asr_final` / `llm_result` / `device_command` / `error`）打一行 INFO 日志
+7. 任意一边断开 → 关闭另一边 → 写对话历史
 
-事件翻译（`partial → asr_partial`）和 LLM 调用都在 Worker 内部完成，Server 不感知。
+事件翻译与 LLM 调用都在 Worker 内部完成，Server 不感知。
 
 ---
 
@@ -192,7 +175,7 @@ Get-Content migrations/002_seed.sql | mysql -u root -p
 
 ---
 
-## 联调：五层验证法（拆分后）
+## 联调：五层验证法
 
 ```
 第 1 层  ASR 进程是否起来              → curl http://127.0.0.1:9100/v1/health
@@ -275,7 +258,7 @@ Get-Content migrations/002_seed.sql | mysql -u root -p
 
 ### 3. 写家具端 WS 加锁
 
-虽然拆分后只有"worker → 家具端"一个写者 goroutine，但仍保留 `sync.Mutex`，为后续要在 Server 侧主动推送 `device.status` 等事件留出扩展空间。
+虽然只有"worker → 家具端"一个写者 goroutine，但仍保留 `sync.Mutex`，为后续要在 Server 侧主动推送 `device.status` 等事件留出扩展空间。
 
 ### 4. 设备鉴权
 
@@ -291,19 +274,6 @@ ws://server:8080/v1/voice?device_id=<id>&token=<device-token>
 
 ## 后续工作
 
-- [x] 与 ASR Model 的 WS 协议契约（已迁移至 worker）
-- [x] 家具端 ↔ Go Server 协议契约
-- [x] 联调脚本（`furniture/mock_furniture.py`）
-- [x] 搭基础脚手架
-- [x] 实现 `/v1/voice` 透传（M1）
-- [x] 接入云端 LLM（M2，已迁移至 worker）
-- [x] **拆出 worker，server 改为纯转发**（v0.3）
-- [x] **MySQL + Redis 接入**（v0.4）
-- [x] **用户注册/登录 API**（JWT + bcrypt）
-- [x] **设备与状态 CRUD API**
-- [x] **数据库迁移脚本（7 张表）**
-- [x] **LLM Tool Call 设备控制拦截与执行**（v0.5：VoiceHandler 拦截 device_command + DeviceService 更新 DB + 回传结果）
-- [x] **设备上下文推送**（v0.5：会话建立时查询用户设备列表+状态，推送给 Worker）
 - [ ] 实现设备 Token 鉴权
 - [ ] 接入 MQTT（推荐 `eclipse/paho.mqtt.golang`）
 - [ ] 对话历史落库（conversation/message 写入）

@@ -33,7 +33,7 @@ class ApiClient(private val tokenStore: TokenStore) {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    // ───────────────────────── Auth ─────────────────────────
+    // Auth
 
     suspend fun login(phone: String, password: String): ApiResult<AuthToken> {
         val body = JSONObject().apply {
@@ -60,7 +60,7 @@ class ApiClient(private val tokenStore: TokenStore) {
         return res.map { json -> json.toAuthToken() }
     }
 
-    // ───────────────────────── Devices ─────────────────────────
+    // Devices
 
     suspend fun listDevices(): ApiResult<List<Device>> {
         val res = get("/api/v1/devices")
@@ -101,7 +101,7 @@ class ApiClient(private val tokenStore: TokenStore) {
         return res.map { }
     }
 
-    // ───────────────────────── HTTP 内部封装 ─────────────────────────
+    // HTTP 内部封装
 
     private suspend fun get(path: String): ApiResult<JSONObject> = withContext(Dispatchers.IO) {
         execute(Request.Builder().url(baseUrl + path).get().withAuth())
@@ -166,7 +166,7 @@ class ApiClient(private val tokenStore: TokenStore) {
     }
 }
 
-// ───────────────────────── DTO 解码 ─────────────────────────
+// DTO 解码
 
 private fun JSONObject.toAuthToken(): AuthToken = AuthToken(
     accessToken = optString("access_token"),

@@ -3,8 +3,6 @@ package model
 
 import "time"
 
-// ──────────────────────────── 用户 ────────────────────────────
-
 // User 对应 users 表。
 type User struct {
 	UserID       int64  `db:"user_id"       json:"user_id"`
@@ -16,8 +14,6 @@ type User struct {
 	CreatedAt    time.Time `db:"created_at"  json:"created_at"`
 	UpdatedAt    time.Time `db:"updated_at"  json:"updated_at"`
 }
-
-// ──────────────────────────── 设备 ────────────────────────────
 
 // DeviceType 设备类型枚举。
 type DeviceType string
@@ -55,8 +51,6 @@ type Device struct {
 	UpdatedAt time.Time    `db:"updated_at" json:"updated_at"`
 }
 
-// ──────────────────────────── 设备状态 ────────────────────────────
-
 // AirconMode 空调模式枚举。
 type AirconMode string
 
@@ -78,8 +72,6 @@ type DeviceState struct {
 	Position    *int       `db:"position"    json:"position,omitempty"`
 	UpdatedAt   time.Time  `db:"updated_at"  json:"updated_at"`
 }
-
-// ──────────────────────────── 对话 ────────────────────────────
 
 // Conversation 对应 conversations 表。
 type Conversation struct {
@@ -109,8 +101,6 @@ type Message struct {
 	CreatedAt      time.Time   `db:"created_at"      json:"created_at"`
 }
 
-// ──────────────────────────── 指令 ────────────────────────────
-
 // CommandResult 指令执行结果枚举。
 type CommandResult string
 
@@ -135,8 +125,6 @@ type Command struct {
 
 // JSON 是 []byte 的别名，方便自定义数据库扫描/值写入。
 type JSON []byte
-
-// ──────────────────────────── 场景 ────────────────────────────
 
 // Scene 对应 scenes 表。
 type Scene struct {

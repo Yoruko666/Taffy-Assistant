@@ -60,7 +60,7 @@ import com.taffy.client.data.DeviceCard
  * 设备列表页：UC-03 主舞台。
  *
  * 顶部 AppBar 含手动刷新；中部 LazyColumn 渲染卡片，每张卡片可直接开关；
- * 底部预留"语音对话"入口（M4 接入 ChatScreen）。
+ * 底部预留"语音对话"入口。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
