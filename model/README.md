@@ -36,49 +36,94 @@ model/
 ## 安装步骤（Windows）
 
 > 以下命令均在 `model/` 目录下，使用 PowerShell 执行。
+> ⚠️ 总耗时约 15~30 分钟（取决于网络），请耐心等待每步完成后再执行下一步。
 
-### 1. 进入 model 目录
+### 前提
+
+- Python 3.10+（建议 Anaconda 或 venv 虚拟环境）
+- pip 已可用
+- 磁盘空余 ≥ 5 GB（模型 ~1GB + torch ~2GB + 其他依赖 ~500MB）
+
+### 0. 创建虚拟环境（如果还没有）
 
 ```powershell
-cd model
+python -m venv .venv
+.\.venv\Scripts\activate
 ```
 
-### 2. 下载推理依赖包到 `gguf_pkg/`
+### 1. 安装 huggingface_hub（模型下载工具）
 
 ```powershell
-python setup_gguf.py
+pip install huggingface_hub
 ```
 
-### 3. 安装服务运行依赖
+### 2. 下载 ASR / TTS 模型
 
 ```powershell
-# ASR 依赖（FunASR + Torch，体积较大）
-pip install -r asr_server/requirements.txt
+# 一次下完 ASR(流式 + VAD) + TTS（默认走 hf-mirror 镜像，国内可用）
+python download_model.py
+```
 
-# TTS 依赖（Piper，体积小）
+> 如果 ASR 下载失败（残留空目录），先删掉重来：
+> ```powershell
+> Remove-Item -Recurse -Force asr_server/models/paraformer-zh-streaming, asr_server/models/fsmn-vad
+> python download_model.py --only asr
+> ```
+
+下载产物：
+
+| 模型 | 路径 | 说明 |
+|---|---|---|
+| ASR 流式 | `asr_server/models/paraformer-zh-streaming/` | 8 个文件，~889 MB |
+| ASR VAD | `asr_server/models/fsmn-vad/` | 6 个文件 |
+| TTS | `tts_server/models/zh/zh_CN/huayan/medium/` | 2 个文件，~60 MB |
+
+### 3. 安装 TTS 依赖（轻量，先装）
+
+```powershell
 pip install -r tts_server/requirements.txt
 ```
 
-### 4. 下载 ASR / TTS 模型
-
+验证：
 ```powershell
-# 一次下完 ASR(流式 + VAD) + TTS（默认走 hf-mirror 镜像）
-python download_model.py
-
-# 也可以只下某一类
-python download_model.py --only asr
-python download_model.py --only tts
-
-# 可选：额外下载非流式 paraformer-zh，用于 HTTP /transcribe 调试
-python download_model.py --with-offline-asr
+python -c "import piper; print('OK')"
+# 输出：OK
 ```
 
-下载产物分别落地到：
+### 4. 安装 Torch（推荐 CPU 版，速度快）
 
-- ASR 流式：`asr_server/models/paraformer-zh-streaming/`
-- ASR VAD ：`asr_server/models/fsmn-vad/`
-- ASR 非流式（可选）：`asr_server/models/paraformer-zh/`
-- TTS：`tts_server/models/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx(.json)`
+> 直接 `pip install torch` 可能很慢。建议用 PyTorch 官方 CPU 源：
+
+```powershell
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+```
+
+验证：
+```powershell
+python -c "import torch; print(torch.__version__)"
+# 输出：2.12.0+cpu
+```
+
+### 5. 安装 ASR 依赖
+
+```powershell
+# 先装 funasr 本体
+pip install funasr --no-deps
+
+# 再装 funasr 的所有依赖（editdistance 需要 C++ 编译器，跳过）
+pip install omegaconf hydra-core scipy librosa soundfile modelscope jieba safetensors transformers tiktoken sentencepiece kaldiio jamo jaconv umap_learn requests python-multipart
+
+# 补装 funasr 的其他间接依赖
+pip install oss2 tensorboardX torch_complex
+```
+
+验证：
+```powershell
+python -c "import funasr; print('funasr OK')"
+# 输出：funasr OK（可能有 ffmpeg 警告，不影响）
+```
+
+> ⚠️ `editdistance` 需要 C++ 编译环境（MSVC），Windows 装不了不影响核心功能，可以忽略。
 
 ---
 
@@ -330,3 +375,40 @@ PASS: 6/6
 - [x] 家具端协议落地（见 [`furniture/README.md`](../furniture/README.md)）
 
 > 详细架构与契约见 [`docs/03-软件设计文档.md`](../docs/03-软件设计文档.md) §3.3 与 §4.6。
+
+---
+
+## 部署验证清单（Link ① 模型服务自检）
+
+> 负责：吴承凯 | 验收：关梓浩 | W7 联调前必须全部绿灯
+
+### 启动服务
+
+```powershell
+# 终端 A：TTS
+cd model
+python -m uvicorn tts_server.app:app --host 127.0.0.1 --port 9200
+
+# 终端 B：ASR（约需 30s 加载模型）
+cd model
+python -m uvicorn asr_server.app:app --host 127.0.0.1 --port 9100
+```
+
+### 验收点
+
+| # | 检查项 | 命令 | 绿灯标准 |
+|---|---|---|---|
+| ① | TTS 健康 | `curl http://127.0.0.1:9200/v1/health -UseBasicParsing` | `"status":"ok"`，`loaded_voices` 含 `zh_CN-huayan-medium` |
+| ② | ASR 健康 | `curl http://127.0.0.1:9100/v1/health -UseBasicParsing` | `"status":"ok"`，`stream_loaded: true` |
+| ③ | TTS 合成测试 | `curl -X POST -H "Content-Type: application/json" -d '{"text":"测试"}' http://127.0.0.1:9200/v1/tts/synthesize -UseBasicParsing -OutFile test.wav` | `test.wav` 可播放，时长 1~2s |
+| ④ | ASR 流式测试 | `pip install websockets soundfile numpy` + `python asr_server/scripts/test_stream.py --url ws://127.0.0.1:9100/v1/asr/stream --wav test.wav` | 终端打印 `partial → final` 文本 |
+
+### 常见故障
+
+| 现象 | 原因 | 解决 |
+|---|---|---|
+| TTS 503 `piper-tts not installed` | 缺 piper 包 | `pip install piper-tts` |
+| ASR 启动后一直 loading | 模型首次加载 ~30s | 等，正常 |
+| ASR `ModuleNotFoundError: omegaconf` | 缺依赖 | 按上面安装步骤第 5 步补装 |
+| `editdistance` 编译失败 | 需要 MSVC | 忽略，不影响核心功能 |
+| 端口被占用 | 其他进程 | `netstat -ano \| findstr :9100` 找到 PID 杀掉 |
