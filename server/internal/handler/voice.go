@@ -114,8 +114,13 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Info("worker connected", "worker", workerURL)
 
 	// 3) 推送设备上下文给 Worker（如果数据库可用）
+	//
+	// 必须**同步**推送：worker 的 system prompt 依赖此设备列表来生成 tool call
+	// 的 device_id。如果异步推送，第一轮 asr_final 触发 LLM 时设备列表可能还没到，
+	// 模型会因为"暂无设备"而拒绝控制。
+	// 推送本身只发一条 ws 文本帧，最坏 5s（DB 超时）就返回，不会显著增加首字延迟。
 	if h.deviceSvc != nil && deviceID != "" {
-		go h.pushDeviceContext(workerConn, deviceID, log)
+		h.pushDeviceContext(workerConn, deviceID, log)
 	}
 
 	// 4) 双向透传（worker → client 方向拦截 device_command）

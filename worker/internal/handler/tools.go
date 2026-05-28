@@ -6,6 +6,14 @@ import "encoding/json"
 // 采用 OpenAI Function Calling 格式，让大模型按需调用控制家具的指令。
 
 // BuildTools 构造发送给 LLM 的 tools 参数。
+//
+// 设计说明：
+//   - control_device 的所有动作参数（brightness/temperature/mode/position）
+//     **平铺**在顶层，与 server.executeControlDevice 的解析结构保持一致；
+//     不要再嵌套 params 子对象，否则 server 端拿不到字段。
+//   - activate_scene 暂未实现服务端逻辑（见 server.executeActivateScene），
+//     在此**先不暴露给 LLM**，避免模型误触发后回复"暂未实现"。
+//     待 server 侧补完场景执行后再放回 tools 列表（见 todo: 场景）。
 func BuildTools() []map[string]any {
 	return []map[string]any{
 		{
@@ -25,57 +33,35 @@ func BuildTools() []map[string]any {
 							"description": "控制动作",
 							"enum":        []string{"turn_on", "turn_off", "set_brightness", "set_temperature", "set_mode", "set_position"},
 						},
-						"params": map[string]any{
-							"type":        "object",
-							"description": "动作参数，根据 action 类型提供对应字段",
-							"properties": map[string]any{
-								"brightness": map[string]any{
-									"type":        "integer",
-									"description": "亮度 0~100，仅 action=set_brightness 时需要",
-									"minimum":     0,
-									"maximum":     100,
-								},
-								"temperature": map[string]any{
-									"type":        "integer",
-									"description": "温度 16~30°C，仅 action=set_temperature 时需要",
-									"minimum":     16,
-									"maximum":     30,
-								},
-								"mode": map[string]any{
-									"type":        "string",
-									"description": "空调模式，仅 action=set_mode 时需要",
-									"enum":        []string{"cool", "heat", "auto", "fan", "dry"},
-								},
-								"position": map[string]any{
-									"type":        "integer",
-									"description": "窗帘开合度 0~100，0=完全关闭，100=完全打开，仅 action=set_position 时需要",
-									"minimum":     0,
-									"maximum":     100,
-								},
-							},
+						"brightness": map[string]any{
+							"type":        "integer",
+							"description": "亮度 0~100，仅 action=set_brightness 时提供",
+							"minimum":     0,
+							"maximum":     100,
+						},
+						"temperature": map[string]any{
+							"type":        "integer",
+							"description": "温度 16~30°C，仅 action=set_temperature 时提供",
+							"minimum":     16,
+							"maximum":     30,
+						},
+						"mode": map[string]any{
+							"type":        "string",
+							"description": "空调模式，仅 action=set_mode 时提供",
+							"enum":        []string{"cool", "heat", "auto", "fan", "dry"},
+						},
+						"position": map[string]any{
+							"type":        "integer",
+							"description": "窗帘开合度 0~100，0=完全关闭，100=完全打开，仅 action=set_position 时提供",
+							"minimum":     0,
+							"maximum":     100,
 						},
 					},
 					"required": []string{"device_id", "action"},
 				},
 			},
 		},
-		{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "activate_scene",
-				"description": "激活预设的家居场景，一键控制多个设备。例如：回家模式、睡眠模式、离家模式等。当用户要求执行某个场景时调用此函数。",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"scene_id": map[string]any{
-							"type":        "integer",
-							"description": "要激活的场景ID，必须从用户拥有的场景列表中选择",
-						},
-					},
-					"required": []string{"scene_id"},
-				},
-			},
-		},
+		// activate_scene：服务端未实现，暂不暴露给 LLM。
 	}
 }
 

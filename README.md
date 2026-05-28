@@ -69,8 +69,8 @@
 4. Worker 拿到 `asr_final` 文本后，异步调用云端 LLM API（**携带设备上下文 + Tool Schema**），若 LLM 判断需要控制设备则返回 `tool_calls`（如 `control_device`）；
 5. Worker 将 `tool_calls` 封装为 `device_command` 事件，通过 WS 发送给 Server；
 6. Server 拦截 `device_command`，调用 DeviceService 更新数据库设备状态 → 回复 `device_command_result`（成功/失败）给 Worker；
-7. Worker 将 tool 执行结果回传 LLM 进行**二次调用**，LLM 生成自然语言回复（如"好的，已为您打开客厅灯"），通过 `llm_result` 推回 Server，Server 透传给家具端；
-8. 家具端收到 `llm_result` 后打印回答，**恢复语音检测**，等待下一轮对话。
+7. Worker 将 tool 执行结果回传 LLM 进行**二次调用**，LLM 生成自然语言回复（如"好的，已为您打开客厅灯"），通过 `llm_result` 推回 Server，Server 透传给家具端；同时 Worker 异步调用 TTS 将文本合成为 wav，下发 `tts_audio`（base64 wav）给家具端播放；
+8. 家具端收到 `llm_result` / `tts_audio` 后打印回答 / 播放语音，**恢复语音检测**，等待下一轮对话。
 
 ## 技术栈
 
@@ -272,7 +272,7 @@ curl http://127.0.0.1:8080/v1/health
 | 方向 | 类型 | 说明 |
 |---|---|---|
 | 家具→Server | `start` / binary / `end` / `ping` | 音频上行 |
-| Server→家具 | `pong` / `asr_partial` / `asr_final` / `eos` / `llm_result` / `llm_error` / `error` | 识别结果与回复下行 |
+| Server→家具 | `pong` / `asr_partial` / `asr_final` / `eos` / `llm_result` / `tts_audio` / `llm_error` / `error` | 识别结果、文本回复、TTS 语音回复 |
 
 #### Tool Call 扩展消息（v0.5 新增）
 

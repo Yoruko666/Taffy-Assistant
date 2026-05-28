@@ -38,11 +38,14 @@ type OrchestrateHandler struct {
 	cfg      *AppConfig
 	upgrader websocket.Upgrader
 	dialer   *websocket.Dialer
+}
 
-	// 会话级设备上下文（由 Server 在会话开始时推送）
-	mu      sync.Mutex
-	devices []DeviceContext
-	scenes  []SceneContext
+// pendingToolCall 记录一次已下发但还在等 result 的 tool call，
+// 用于在第二轮 LLM 调用时回填真实的 function.name 与 arguments，
+// 避免 history 出现"空参数 + 名字写死"导致的模型幻觉。
+type pendingToolCall struct {
+	Name      string
+	Arguments string // 原始 JSON 字符串
 }
 
 // NewOrchestrateHandler 构造 worker orchestrate handler。
@@ -126,6 +129,11 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var sessionScenes []SceneContext
 	var sessionMu sync.Mutex
 
+	// 会话级 tool_call 缓存：tool_id -> 第一次下发的 name/arguments，
+	// 用于二轮 LLM 调用时还原真实的 history。
+	sessionToolCalls := make(map[string]pendingToolCall)
+	var toolCallMu sync.Mutex
+
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
@@ -180,7 +188,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						var result DeviceCommandResultEvent
 						raw, _ := json.Marshal(ev)
 						if err := json.Unmarshal(raw, &result); err == nil {
-							go h.handleCommandResult(upConn, result, &writeMu, &sessionMu, &sessionDevices, &sessionScenes, log)
+							go h.handleCommandResult(upConn, result, &writeMu, &sessionMu, &sessionDevices, &sessionScenes, sessionToolCalls, &toolCallMu, log)
 						}
 						continue
 					}
@@ -246,7 +254,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							copy(scenesCopy, sessionScenes)
 							sessionMu.Unlock()
 
-							go h.handleLLMWithTools(upConn, text, &writeMu, devicesCopy, scenesCopy, log)
+							go h.handleLLMWithTools(upConn, text, &writeMu, devicesCopy, scenesCopy, sessionToolCalls, &toolCallMu, log)
 						} else {
 							log.Info("asr_final empty text, skip llm")
 							writeMu.Lock()
@@ -277,6 +285,8 @@ func (h *OrchestrateHandler) handleLLMWithTools(
 	writeMu *sync.Mutex,
 	devices []DeviceContext,
 	scenes []SceneContext,
+	toolCallCache map[string]pendingToolCall,
+	toolCallMu *sync.Mutex,
 	log *slog.Logger,
 ) {
 	t0 := time.Now()
@@ -313,6 +323,14 @@ func (h *OrchestrateHandler) handleLLMWithTools(
 		for _, tc := range choice.Message.ToolCalls {
 			log.Info("tool call requested", "function", tc.Function.Name, "args", tc.Function.Arguments, "tool_id", tc.ID)
 
+			// 缓存这次 tool call，二轮 LLM 调用时回填 history
+			toolCallMu.Lock()
+			toolCallCache[tc.ID] = pendingToolCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			}
+			toolCallMu.Unlock()
+
 			writeMu.Lock()
 			_ = writeJSON(conn, DeviceCommandEvent{
 				Type:     "device_command",
@@ -327,12 +345,16 @@ func (h *OrchestrateHandler) handleLLMWithTools(
 	}
 
 	// 纯文本回复
+	replyText := choice.Message.Content
 	writeMu.Lock()
 	_ = writeJSON(conn, map[string]any{
 		"type": "llm_result",
-		"text": choice.Message.Content,
+		"text": replyText,
 	})
 	writeMu.Unlock()
+
+	// 异步触发 TTS：合成失败不影响已下发的文本回复
+	go h.synthesizeAndSendTTS(conn, replyText, writeMu, log)
 }
 
 // handleCommandResult 处理 Server 返回的指令执行结果，触发二次 LLM 调用生成最终回复。
@@ -343,9 +365,25 @@ func (h *OrchestrateHandler) handleCommandResult(
 	sessionMu *sync.Mutex,
 	sessionDevices *[]DeviceContext,
 	sessionScenes *[]SceneContext,
+	toolCallCache map[string]pendingToolCall,
+	toolCallMu *sync.Mutex,
 	log *slog.Logger,
 ) {
 	log.Info("command result received", "tool_id", result.ToolID, "success", result.Success, "message", result.Message)
+
+	// 取回首轮缓存的 tool call，用于二轮 history 还原。
+	// 取出后立即从缓存删除，避免长时间累积。
+	toolCallMu.Lock()
+	pending, ok := toolCallCache[result.ToolID]
+	if ok {
+		delete(toolCallCache, result.ToolID)
+	}
+	toolCallMu.Unlock()
+	if !ok {
+		// 没有缓存通常意味着是脏数据 / 重复回执，仍然给一个安全默认值。
+		log.Warn("no pending tool call found for result", "tool_id", result.ToolID)
+		pending = pendingToolCall{Name: "control_device", Arguments: "{}"}
+	}
 
 	// 获取当前设备上下文快照
 	sessionMu.Lock()
@@ -364,7 +402,7 @@ func (h *OrchestrateHandler) handleCommandResult(
 	}
 
 	t0 := time.Now()
-	reply, err := h.callLLMSecondRound(resultContent, result.ToolID, devicesCopy, scenesCopy)
+	reply, err := h.callLLMSecondRound(resultContent, result.ToolID, pending, devicesCopy, scenesCopy)
 	cost := time.Since(t0).Milliseconds()
 
 	if err != nil {
@@ -385,6 +423,9 @@ func (h *OrchestrateHandler) handleCommandResult(
 		"text": reply,
 	})
 	writeMu.Unlock()
+
+	// 异步触发 TTS：合成失败不影响已下发的文本回复
+	go h.synthesizeAndSendTTS(conn, reply, writeMu, log)
 }
 
 // callLLMWithTools 首次调用 LLM，带 tools 参数。
@@ -438,25 +479,43 @@ func (h *OrchestrateHandler) callLLMWithTools(text string, devices []DeviceConte
 }
 
 // callLLMSecondRound 二次调用 LLM，将 tool result 喂回，获取最终文本回复。
-func (h *OrchestrateHandler) callLLMSecondRound(toolResult string, toolID string, devices []DeviceContext, scenes []SceneContext) (string, error) {
+//
+// pending 是首轮 LLM 返回的真实 tool call（function.name + arguments），
+// 必须如实回放，否则会出现 history 与执行结果不自洽，模型容易瞎编。
+func (h *OrchestrateHandler) callLLMSecondRound(toolResult string, toolID string, pending pendingToolCall, devices []DeviceContext, scenes []SceneContext) (string, error) {
 	cfg := &h.cfg.LLM
 
 	systemPrompt := BuildSystemPrompt(cfg.SystemPrompt, devices, scenes)
 
-	// 构建多轮对话：system → assistant(tool_call) → tool(result)
+	// arguments 必须是合法 JSON 字符串；若首轮没拿到（极少数异常路径）则兜底为 "{}"
+	args := pending.Arguments
+	if args == "" {
+		args = "{}"
+	}
+	name := pending.Name
+	if name == "" {
+		name = "control_device"
+	}
+
+	// 构建多轮对话：system → user(占位) → assistant(tool_call) → tool(result)
+	// 注：OpenAI 协议要求在 assistant(tool_calls) 之前必须有 user 消息；
+	// 这里我们没有缓存原始用户文本（避免再开一份缓存），用一句中性占位是安全的，
+	// 因为模型在二轮主要看的是 tool result。
 	messages := []map[string]any{}
 	messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
+	messages = append(messages, map[string]any{"role": "user", "content": "（接上轮设备控制请求）"})
 
-	// assistant 消息（含 tool_calls）
+	// assistant 消息（含 tool_calls）—— 必须如实回填 name 与 arguments
 	messages = append(messages, map[string]any{
-		"role": "assistant",
+		"role":    "assistant",
+		"content": "",
 		"tool_calls": []map[string]any{
 			{
 				"id":   toolID,
 				"type": "function",
 				"function": map[string]any{
-					"name":      "control_device",
-					"arguments": "{}",
+					"name":      name,
+					"arguments": args,
 				},
 			},
 		},
@@ -464,9 +523,9 @@ func (h *OrchestrateHandler) callLLMSecondRound(toolResult string, toolID string
 
 	// tool 消息（执行结果）
 	messages = append(messages, map[string]any{
-		"role":       "tool",
+		"role":         "tool",
 		"tool_call_id": toolID,
-		"content":    toolResult,
+		"content":      toolResult,
 	})
 
 	body := map[string]any{
