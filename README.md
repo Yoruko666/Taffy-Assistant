@@ -91,12 +91,19 @@
 ```
 Taffy-Assistant/
 ├── README.md                                       # 本文件，项目总览
+├── go.work                                         # Go workspace：串起 server / worker / pkg
 ├── .gitignore                                      # 忽略模型权重 / wheel / 构建产物 / 生成音频
 ├── .gitattributes                                  # 跨平台换行符统一配置
 │
 ├── scripts/                                        # 仓库级运维脚本
 │   ├── README.md
 │   └── start-all.ps1                               # 一键起全栈：ASR + TTS + Worker + Server
+│
+├── pkg/                                            # 仓库级共享 Go 模块
+│   └── protocol/                                   # Server↔Worker 共享 WS 协议（事件类型 + 结构体）
+│       ├── go.mod                                  # module taffy.local/pkg/protocol
+│       ├── README.md
+│       └── events.go                               # device_info / device_command / device_command_result 等
 │
 ├── docs/                                           # 项目文档
 │   ├── 00-课程实践考核要求.pdf                       # 课程官方要求
@@ -145,12 +152,15 @@ Taffy-Assistant/
 │       │   └── conversation.go                     # 对话/消息/指令/场景 CRUD
 │       ├── service/
 │       │   ├── user.go                             # 注册/登录/密码校验（bcrypt）
-│       │   └── device.go                          # 设备创建/状态更新/权限校验
+│       │   ├── device.go                           # 设备创建/状态更新/权限校验
+│       │   ├── voice_context.go                    # /v1/voice 设备上下文构建（推送给 Worker）
+│       │   └── voice_command.go                    # /v1/voice device_command 拦截执行
 │       ├── middleware/jwt.go                       # JWT 生成/解析/黑名单/RequireAuth
 │       └── handler/
 │           ├── config_compat.go                    # LoadConfig/DefaultConfig 向后兼容
 │           ├── health.go                           # /v1/health（worker/db/redis 状态）
-│           ├── voice.go                            # /v1/voice（家具 ↔ worker 透传 + device_command 拦截 + 设备上下文推送）
+│           ├── voice.go                            # /v1/voice WS 接入（透传 + 调用 service/voice_*）
+│           ├── voice_proto.go                      # /v1/voice 协议工具：鉴权环境变量 / writeJSON / 事件分类
 │           ├── auth.go                             # /api/v1/auth/register + /login
 │           └── device.go                           # /api/v1/devices/* 设备与状态 API
 │
@@ -163,7 +173,7 @@ Taffy-Assistant/
 │       ├── config.go                               # ASR/LLM/TTS 三段配置
 │       ├── health.go                               # /v1/health
 │       ├── orchestrate.go                          # /v1/orchestrate（核心 AI 工作流 + Tool Call）
-│       └── tools.go                                # Tool Schema 定义 + 设备上下文 + LLM 响应解析
+│       └── tools.go                                # Tool Schema 定义 + 协议结构体（pkg/protocol 别名）
 │
 ├── furniture/                                      # 家具端"小菲"（KWS + VAD + WS 长连接）
 │   ├── README.md                                   # 家具 ↔ server WS 协议契约

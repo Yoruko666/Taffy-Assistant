@@ -47,6 +47,8 @@ Server ──device_command_result──▶ Worker （控制结果回传 → 二
 
 ### `/v1/orchestrate` 协议
 
+> v0.5 新增的 Server↔Worker 事件（`device_info` / `device_command` / `device_command_result`）的 `type` 字段值与对应 Go 结构体均集中定义在 [`pkg/protocol/events.go`](../pkg/protocol/events.go)。Worker 通过 `internal/handler/tools.go` 中的 type alias 引用，**字段以 protocol 包为准**。
+
 | 方向 | 帧类型 | 内容 |
 |---|---|---|
 | Server→Worker | text | `{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}` |

@@ -79,6 +79,8 @@ python furniture/mock_devices.py --standalone --devices light_living,aircon_bedr
 
 **端点**：`wss://<host>:8080/v1/voice?device_id=<id>&token=<device-token>`
 
+> 家具端只需感知与 Server 之间的 WS 事件；Server↔Worker 内部协议（`device_info` / `device_command` / `device_command_result`）见 [`pkg/protocol`](../pkg/protocol/README.md) 与 [`server/README.md`](../server/README.md)，对家具端透明。
+
 | 方向 | 帧类型 | 内容 |
 |---|---|---|
 | 家具→Server | text | `{"type":"start","sample_rate":16000,"format":"pcm_s16le","channels":1}` |
@@ -89,12 +91,12 @@ python furniture/mock_devices.py --standalone --devices light_living,aircon_bedr
 | Server→家具 | text | `{"type":"asr_partial","text":"..."}`（ASR 中间结果） |
 | Server→家具 | text | `{"type":"asr_final","text":"..."}`（ASR 最终结果 → 触发 LLM） |
 | Server→家具 | text | `{"type":"eos"}`（本段结束，连接保持） |
-| Server→家具 | text | `{"type":"llm_result","text":"..."}`（M2：大模型回答） |
-| Server→家具 | text | `{"type":"llm_error","message":"..."}`（M2：大模型调用失败） |
-| Server→家具 | text | `{"type":"reply","text":"..."}`（M3：大模型回答） |
-| Server→家具 | text | `{"type":"device_done","device":"...","action":"..."}`（M3：设备执行完成） |
+| Server→家具 | text | `{"type":"llm_result","text":"..."}`（大模型最终回答） |
+| Server→家具 | text | `{"type":"llm_error","message":"..."}`（大模型调用失败） |
 | Server→家具 | text | `{"type":"tts_audio","format":"wav","data":"<base64>"}`（M3：语音回播） |
 | Server→家具 | text | `{"type":"error","message":"..."}`（其他错误） |
+
+> 历史事件 `reply` / `device_done` 已废弃：大模型回复统一走 `llm_result`；设备执行结果在 Server↔Worker 内部用 `device_command_result` 闭环，不会回传到家具端。
 
 > `tts_audio` 由家具端保存或播放（`mock_furniture.py` 当前保存到 `furniture/output/`）。
 

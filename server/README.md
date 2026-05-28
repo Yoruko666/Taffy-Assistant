@@ -92,6 +92,8 @@
 
 **v0.5 新增：Tool Call 扩展协议（Server ↔ Worker 间）**
 
+> 以下事件 `type` 字段值与对应 Go 结构体均集中定义在 [`pkg/protocol/events.go`](../pkg/protocol/events.go)（`module taffy.local/pkg/protocol`），server 与 worker 引用同一份 source of truth。新增 / 重命名事件类型时，请先改 protocol 包再同时修改两端。
+
 | 方向 | 帧类型 | 内容 |
 |---|---|---|
 | Server→Worker | text | `{"type":"device_info","devices":[...]}`  — 会话建立后推送用户设备列表+状态 |
@@ -136,15 +138,20 @@ server/
     │   └── conversation.go              # 对话/消息/指令/场景 CRUD
     ├── service/
     │   ├── user.go                       # 注册/登录/密码校验（bcrypt）
-    │   └── device.go                    # 设备创建/状态更新/权限校验
+    │   ├── device.go                     # 设备创建/状态更新/权限校验
+    │   ├── voice_context.go              # /v1/voice 设备上下文构建（BuildDeviceContext，推送给 Worker）
+    │   └── voice_command.go              # /v1/voice device_command 执行（ExecuteControlDevice / ExecuteActivateScene）
     ├── middleware/jwt.go                 # JWT 生成/解析/黑名单/RequireAuth
     └── handler/
         ├── config_compat.go             # LoadConfig/DefaultConfig 向后兼容
         ├── health.go                     # /v1/health（worker/db/redis 状态）
-        ├── voice.go                      # /v1/voice（家具 ↔ worker 透传 + device_command 拦截执行 + device_info 上下文推送 + 会话日志）
+        ├── voice.go                      # /v1/voice WS 接入（鉴权 + 双向透传 + 调用 service/voice_*）
+        ├── voice_proto.go                # /v1/voice 协议工具（鉴权环境变量 / writeJSON / 事件分类）
         ├── auth.go                       # /api/v1/auth/register + /login
         └── device.go                    # /api/v1/devices/* 设备与状态 API
 ```
+
+> 协议结构体（`device_info` / `device_command` / `device_command_result` 等）通过仓库根 `go.work` 引用 [`pkg/protocol`](../pkg/protocol/README.md)，不重复定义。
 
 ### 依赖
 
@@ -156,6 +163,8 @@ go get github.com/redis/go-redis/v9
 go get github.com/golang-jwt/jwt/v5
 go get golang.org/x/crypto
 ```
+
+> 另：本模块通过仓库根 [`go.work`](../go.work) 引用本地 module `taffy.local/pkg/protocol`（`go.mod` 中以 `replace ../pkg/protocol` 兜底），不发布到任何 module proxy。
 
 ### 配置方式
 
