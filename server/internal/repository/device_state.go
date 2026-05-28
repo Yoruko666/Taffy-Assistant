@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"system/internal/model"
+	"taffy-server/internal/model"
 )
 
 // DeviceStateRepo 设备状态表数据访问。

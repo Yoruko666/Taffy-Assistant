@@ -1,4 +1,4 @@
-package com.shva.client.ui
+package com.taffy.client.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -12,10 +12,10 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.shva.client.ShvaApplication
-import com.shva.client.ui.devices.DeviceListScreen
-import com.shva.client.ui.login.LoginScreen
-import com.shva.client.ui.voice.VoiceChatScreen
+import com.taffy.client.TaffyApplication
+import com.taffy.client.ui.devices.DeviceListScreen
+import com.taffy.client.ui.login.LoginScreen
+import com.taffy.client.ui.voice.VoiceChatScreen
 
 /**
  * 顶层导航：根据持久化的 token 决定起点路由。
@@ -34,7 +34,7 @@ object Routes {
 @Composable
 fun AppNav() {
     val context = LocalContext.current
-    val app = context.applicationContext as ShvaApplication
+    val app = context.applicationContext as TaffyApplication
 
     // 用 token 是否存在决定 startDestination；只在首次进入时计算一次。
     val token by app.tokenStore.tokenFlow.collectAsState(initial = null)

@@ -1,4 +1,4 @@
-package com.shva.client.ui.devices
+package com.taffy.client.ui.devices
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -53,8 +53,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.shva.client.ShvaApplication
-import com.shva.client.data.DeviceCard
+import com.taffy.client.TaffyApplication
+import com.taffy.client.data.DeviceCard
 
 /**
  * 设备列表页：UC-03 主舞台。
@@ -69,7 +69,7 @@ fun DeviceListScreen(
     onOpenVoice: () -> Unit,
 ) {
     val context = LocalContext.current
-    val app = context.applicationContext as ShvaApplication
+    val app = context.applicationContext as TaffyApplication
     val vm: DeviceListViewModel = viewModel(
         factory = DeviceListViewModel.Factory(app.apiClient, app.tokenStore),
     )

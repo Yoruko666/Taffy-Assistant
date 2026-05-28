@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
-	"system/internal/config"
+	"taffy-server/internal/config"
 )
 
 // InitMySQL 根据 AppConfig 初始化 MySQL 连接池。

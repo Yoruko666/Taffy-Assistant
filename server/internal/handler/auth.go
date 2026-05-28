@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"system/internal/config"
-	"system/internal/middleware"
-	"system/internal/service"
+	"taffy-server/internal/config"
+	"taffy-server/internal/middleware"
+	"taffy-server/internal/service"
 )
 
 // AuthHandler 认证相关 HTTP 处理器。

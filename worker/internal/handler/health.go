@@ -24,7 +24,7 @@ func HealthWithConfig(w http.ResponseWriter, r *http.Request, cfg *AppConfig) {
 	}
 	resp := map[string]any{
 		"status":  "ok",
-		"service": "shva-worker",
+		"service": "taffy-worker",
 		"version": "0.3.0-split",
 		"time":    time.Now().Format(time.RFC3339),
 		"components": map[string]string{

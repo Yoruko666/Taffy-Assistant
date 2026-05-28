@@ -1,14 +1,14 @@
-package com.shva.client.ui.devices
+package com.taffy.client.ui.devices
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.shva.client.data.ApiClient
-import com.shva.client.data.ApiResult
-import com.shva.client.data.Device
-import com.shva.client.data.DeviceCard
-import com.shva.client.data.DeviceState
-import com.shva.client.data.TokenStore
+import com.taffy.client.data.ApiClient
+import com.taffy.client.data.ApiResult
+import com.taffy.client.data.Device
+import com.taffy.client.data.DeviceCard
+import com.taffy.client.data.DeviceState
+import com.taffy.client.data.TokenStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

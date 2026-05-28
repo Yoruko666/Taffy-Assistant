@@ -9,7 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"system/internal/config"
+	"taffy-server/internal/config"
 )
 
 // HealthWithConfig 是 server /v1/health 的处理器。
@@ -48,7 +48,7 @@ func HealthWithDB(w http.ResponseWriter, r *http.Request, cfg *config.AppConfig,
 
 	resp := map[string]any{
 		"status":  "ok",
-		"service": "shva-server",
+		"service": "taffy-server",
 		"version": "0.4.0-db",
 		"time":    time.Now().Format(time.RFC3339),
 		"components": map[string]string{

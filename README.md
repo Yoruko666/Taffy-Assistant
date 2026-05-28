@@ -1,6 +1,7 @@
-# 智能家居语音交互助手系统
+# 智能家居语音交互助手系统 · Taffy
 
 > 《软件工程》课程实践项目 · 2026 春季学期
+> 项目代号：**Taffy**（家具助手"小菲"的英文谐音；Go 模块 `taffy-server` / `taffy-worker`，Android 包 `com.taffy.client`，数据库 `taffy`）
 > 仓库地址：<https://github.com/Yoruko666/System>
 
 ## 项目简介
@@ -111,8 +112,8 @@ System/
 │       └── src/main/
 │           ├── AndroidManifest.xml
 │           ├── res/values/{strings,themes}.xml
-│           └── java/com/shva/client/
-│               ├── ShvaApplication.kt              # Application 入口
+│           └── java/com/taffy/client/
+│               ├── TaffyApplication.kt              # Application 入口
 │               ├── MainActivity.kt                 # 主界面（消息列表）
 │               ├── ui/theme/Theme.kt               # Material 3 主题
 │               └── websocket/ServerWebSocket.kt    # WS 连接管理（自动重连）
@@ -296,7 +297,7 @@ curl http://127.0.0.1:8080/v1/health
 > 鉴权方式：在请求头添加 `Authorization: Bearer <jwt_token>`
 >
 > **WS `/v1/voice` 鉴权**：必须传 `?device_id=...&token=...`，server 会查 `devices` 表校验 token 是否匹配；
-> 默认要求设备已存在且 `status != unregistered`。开发期可设环境变量 `SHVA_VOICE_AUTH=off` 关闭校验（启动时会打 WARN）。
+> 默认要求设备已存在且 `status != unregistered`。开发期可设环境变量 `TAFFY_VOICE_AUTH=off` 关闭校验（启动时会打 WARN）。
 > 演示账号：`device_id=dev1, token=t1`（属于用户 `13800000001`）。
 
 ### 4. 家具端测试（实时麦克风，含 LLM 多轮对话 + Tool Call）

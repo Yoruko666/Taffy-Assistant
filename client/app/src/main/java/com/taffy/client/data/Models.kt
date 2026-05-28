@@ -1,4 +1,4 @@
-package com.shva.client.data
+package com.taffy.client.data
 
 /**
  * 设备元信息（来自 GET /api/v1/devices）。

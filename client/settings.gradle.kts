@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SHVA-Client"
+rootProject.name = "Taffy-Client"
 include(":app")

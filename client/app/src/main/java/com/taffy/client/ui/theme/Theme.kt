@@ -1,4 +1,4 @@
-package com.shva.client.ui.theme
+package com.taffy.client.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -25,7 +25,7 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun SHVATheme(
+fun TaffyTheme(
     darkTheme: Boolean = false,
     content: @Composable () -> Unit,
 ) {

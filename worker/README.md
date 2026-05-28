@@ -1,6 +1,6 @@
 # Worker（Go 大模型编排进程）
 
-> SHVA 系统的"AI 编排层"。从 v0.3 起从 Server 中拆出，独占 ASR / LLM / TTS 等模型能力的调度。
+> Taffy 系统的"AI 编排层"。从 v0.3 起从 Server 中拆出，独占 ASR / LLM / TTS 等模型能力的调度。
 > 从 v0.5 起支持 **OpenAI Function Calling（Tool Call）**，LLM 可按需调用 `control_device` / `activate_scene` 等工具函数控制家居设备。
 >
 > **职责**：

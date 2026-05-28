@@ -1,6 +1,6 @@
-package com.shva.client.data
+package com.taffy.client.data
 
-import com.shva.client.BuildConfig
+import com.taffy.client.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType

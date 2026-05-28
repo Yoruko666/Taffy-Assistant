@@ -1,4 +1,4 @@
-package com.shva.client.ui.voice
+package com.taffy.client.ui.voice
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -34,7 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.shva.client.websocket.ServerWebSocket
+import com.taffy.client.websocket.ServerWebSocket
 import kotlinx.coroutines.launch
 
 /**

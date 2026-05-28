@@ -79,7 +79,7 @@ def get_voice(voice: str):
     return pv
 
 
-app = FastAPI(title="SHVA TTS Server", version="0.1.0")
+app = FastAPI(title="Taffy TTS Server", version="0.1.0")
 
 
 class SynthesizeReq(BaseModel):

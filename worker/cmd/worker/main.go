@@ -1,4 +1,4 @@
-// Command worker 是 SHVA 系统的大模型编排进程。
+// Command worker 是 Taffy 系统的大模型编排进程。
 //
 // 职责：
 //   - 接受 Server 通过 WS 推送的语音流（/v1/orchestrate）
@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"worker/internal/handler"
+	"taffy-worker/internal/handler"
 )
 
 func main() {

@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"system/internal/model"
-	"system/internal/repository"
+	"taffy-server/internal/model"
+	"taffy-server/internal/repository"
 )
 
 // ErrDeviceNotFound 设备不存在。

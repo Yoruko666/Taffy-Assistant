@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"system/internal/model"
+	"taffy-server/internal/model"
 )
 
 // ConversationRepo 对话会话数据访问。

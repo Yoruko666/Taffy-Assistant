@@ -1,4 +1,4 @@
-module worker
+module taffy-worker
 
 go 1.22
 

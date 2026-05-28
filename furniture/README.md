@@ -1,6 +1,6 @@
 # Furniture（家具端）
 
-> SHVA 系统的**音频输入端**：家具助手"**小菲**"——带麦克风与扬声器的智能家居设备。
+> Taffy 系统的**音频输入端**：家具助手"**小菲**"——带麦克风与扬声器的智能家居设备。
 
 ---
 
@@ -89,8 +89,8 @@ python furniture/mock_devices.py --standalone --devices light_living,aircon_bedr
 
 | Topic | 方向 | 说明 | QoS |
 |---|---|---|---|
-| `shva/device/{id}/register` | Dev→Server | 上线注册 | 1 |
-| `shva/device/{id}/cmd` | Server→Dev | 下发控制指令 | 1 |
-| `shva/device/{id}/status` | Dev→Server | 状态上报 | 1 |
-| `shva/device/{id}/result` | Dev→Server | 指令执行结果 | 1 |
-| `shva/device/{id}/heartbeat` | Dev→Server | 心跳（30s） | 0 |
+| `taffy/device/{id}/register` | Dev→Server | 上线注册 | 1 |
+| `taffy/device/{id}/cmd` | Server→Dev | 下发控制指令 | 1 |
+| `taffy/device/{id}/status` | Dev→Server | 状态上报 | 1 |
+| `taffy/device/{id}/result` | Dev→Server | 指令执行结果 | 1 |
+| `taffy/device/{id}/heartbeat` | Dev→Server | 心跳（30s） | 0 |

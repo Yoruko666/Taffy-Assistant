@@ -2,7 +2,7 @@
 // 实际定义已迁移到 internal/config 包，以消除循环导入。
 package handler
 
-import "system/internal/config"
+import "taffy-server/internal/config"
 
 // AppConfig 是 config.AppConfig 的类型别名，保持向后兼容。
 type AppConfig = config.AppConfig

@@ -1,11 +1,11 @@
--- SHVA 数据库初始化脚本
+-- Taffy 数据库初始化脚本
 -- 执行: mysql -u root -p < 001_init.sql
 
-CREATE DATABASE IF NOT EXISTS shva
+CREATE DATABASE IF NOT EXISTS taffy
     DEFAULT CHARACTER SET utf8mb4
     DEFAULT COLLATE utf8mb4_unicode_ci;
 
-USE shva;
+USE taffy;
 
 -- ============================================================
 -- 1. 用户表

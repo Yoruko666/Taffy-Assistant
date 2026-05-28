@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"system/internal/model"
+	"taffy-server/internal/model"
 )
 
 // UserRepo 用户表数据访问。

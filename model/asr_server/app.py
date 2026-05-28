@@ -160,7 +160,7 @@ def get_offline_model() -> Any:
     return _offline_model
 
 
-app = FastAPI(title="SHVA ASR Server", version="0.2.0")
+app = FastAPI(title="Taffy ASR Server", version="0.2.0")
 
 
 @app.on_event("startup")

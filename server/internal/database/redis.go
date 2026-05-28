@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"system/internal/config"
+	"taffy-server/internal/config"
 )
 
 // InitRedis 根据 AppConfig 初始化 Redis 连接。

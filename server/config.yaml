@@ -1,4 +1,4 @@
-# SHVA Server 配置
+# Taffy Server 配置
 # Server 是系统中枢：负责接收家具端 / 客户端的请求，转发给 Worker（大模型编排），
 # 自身不直接接 ASR / LLM / TTS。
 #
@@ -15,7 +15,7 @@ mysql:
   port: 3306
   user: "root"
   password: ""
-  dbname: "shva"
+  dbname: "taffy"
   # 连接池参数
   max_open_conns: 20
   max_idle_conns: 10

@@ -1,4 +1,4 @@
-// Command server 是 SHVA 系统的 Go 中枢服务。
+// Command server 是 Taffy 系统的 Go 中枢服务。
 //
 // 拆分后职责：
 //   - 接收家具端 / 客户端的接入（WS / REST）
@@ -29,12 +29,12 @@ import (
 	"syscall"
 	"time"
 
-	"system/internal/config"
-	"system/internal/database"
-	"system/internal/handler"
-	"system/internal/middleware"
-	"system/internal/repository"
-	"system/internal/service"
+	"taffy-server/internal/config"
+	"taffy-server/internal/database"
+	"taffy-server/internal/handler"
+	"taffy-server/internal/middleware"
+	"taffy-server/internal/repository"
+	"taffy-server/internal/service"
 )
 
 func main() {

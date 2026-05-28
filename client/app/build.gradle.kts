@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.shva.client"
+    namespace = "com.taffy.client"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.shva.client"
+        applicationId = "com.taffy.client"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

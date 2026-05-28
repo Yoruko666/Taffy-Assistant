@@ -11,7 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 
-	"system/internal/config"
+	"taffy-server/internal/config"
 )
 
 // Claims 自定义 JWT Claims。

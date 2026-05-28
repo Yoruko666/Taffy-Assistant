@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"system/internal/middleware"
-	"system/internal/model"
-	"system/internal/service"
+	"taffy-server/internal/middleware"
+	"taffy-server/internal/model"
+	"taffy-server/internal/service"
 )
 
 // DeviceHandler 设备相关 HTTP 处理器。

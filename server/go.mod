@@ -1,4 +1,4 @@
-module system
+module taffy-server
 
 go 1.22
 

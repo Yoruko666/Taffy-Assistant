@@ -16,7 +16,7 @@ function NewTerm($WorkDir, $Cmd) {
     Start-Process powershell -ArgumentList "-NoExit", "-Exec", "Bypass", "-Enc", $enc
 }
 
-Write-Host "=== SHVA START ALL ==="
+Write-Host "=== Taffy START ALL ==="
 Write-Host ""
 
 # start ASR
@@ -65,7 +65,7 @@ $workerOk = $false
 for ($i = 0; $i -lt 30; $i++) {
     try {
         $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$WorkerPort/v1/health"
-        if ($r.Content -match "shva-worker") { $workerOk = $true; break }
+        if ($r.Content -match "taffy-worker") { $workerOk = $true; break }
     } catch {}
     Write-Host "." -NoNewline
     Start-Sleep 2

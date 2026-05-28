@@ -1,4 +1,4 @@
-# SHVA Android 客户端
+# Taffy Android 客户端
 
 > Android 端控制/管理面板，使用 **Kotlin + Jetpack Compose (Material 3)**。
 
@@ -28,8 +28,8 @@ client/
         │       ├── strings.xml      # 字符串资源
         │       └── themes.xml       # 基础主题（Compose 全权接管 UI）
         │
-        └── java/com/shva/client/
-            ├── ShvaApplication.kt           # Application 入口（持有 TokenStore + ApiClient 单例）
+        └── java/com/taffy/client/
+            ├── TaffyApplication.kt           # Application 入口（持有 TokenStore + ApiClient 单例）
             ├── MainActivity.kt              # 仅承载 AppNav
             ├── data/
             │   ├── ApiClient.kt             # OkHttp 封装的 REST 客户端（auth + devices）

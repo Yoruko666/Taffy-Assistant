@@ -1,7 +1,7 @@
--- SHVA 测试种子数据
+-- Taffy 测试种子数据
 -- 执行: mysql -u root -p < 002_seed.sql
 
-USE shva;
+USE taffy;
 
 -- 密码均为 "password123" 的 bcrypt 哈希（cost=10）
 INSERT INTO users (user_id, phone, email, password_hash, nickname) VALUES

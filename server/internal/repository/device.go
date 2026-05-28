@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"system/internal/model"
+	"taffy-server/internal/model"
 )
 
 // DeviceRepo 设备表数据访问。

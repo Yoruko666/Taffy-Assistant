@@ -1,4 +1,4 @@
-// Package model 定义 SHVA 系统的数据模型，与数据库表一一对应。
+// Package model 定义 Taffy 系统的数据模型，与数据库表一一对应。
 package model
 
 import "time"

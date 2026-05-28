@@ -1,10 +1,10 @@
-package com.shva.client
+package com.taffy.client
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import com.shva.client.ui.AppNav
-import com.shva.client.ui.theme.SHVATheme
+import com.taffy.client.ui.AppNav
+import com.taffy.client.ui.theme.TaffyTheme
 
 /**
  * 入口 Activity。
@@ -14,7 +14,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            SHVATheme {
+            TaffyTheme {
                 AppNav()
             }
         }

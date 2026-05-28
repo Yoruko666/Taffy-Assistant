@@ -1,7 +1,7 @@
-package com.shva.client.websocket
+package com.taffy.client.websocket
 
 import android.util.Log
-import com.shva.client.BuildConfig
+import com.taffy.client.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response

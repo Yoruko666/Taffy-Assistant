@@ -1,4 +1,4 @@
-package com.shva.client.data
+package com.taffy.client.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.map
  *
  * 注意：DataStore 是异步 IO 默认在 [Dispatchers.IO]，主线程 collect 安全。
  */
-private val Context.tokenDataStore by preferencesDataStore(name = "shva_auth")
+private val Context.tokenDataStore by preferencesDataStore(name = "taffy_auth")
 
 class TokenStore(private val context: Context) {
 

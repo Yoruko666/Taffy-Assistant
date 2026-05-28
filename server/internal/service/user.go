@@ -8,8 +8,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"system/internal/model"
-	"system/internal/repository"
+	"taffy-server/internal/model"
+	"taffy-server/internal/repository"
 )
 
 // ErrDuplicatePhone 手机号已注册。

@@ -1,4 +1,4 @@
-package com.shva.client.ui.login
+package com.taffy.client.ui.login
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.shva.client.ShvaApplication
+import com.taffy.client.TaffyApplication
 import androidx.compose.ui.platform.LocalContext
 
 /**
@@ -38,7 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 @Composable
 fun LoginScreen(onLoggedIn: () -> Unit) {
     val context = LocalContext.current
-    val app = context.applicationContext as ShvaApplication
+    val app = context.applicationContext as TaffyApplication
     val vm: LoginViewModel = viewModel(
         factory = LoginViewModel.Factory(app.apiClient, app.tokenStore),
     )
@@ -57,7 +57,7 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                text = "小菲 SHVA",
+                text = "小菲 Taffy",
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,

@@ -17,11 +17,11 @@ except ImportError as exc:
     raise SystemExit(1)
 
 
-TOPIC_REGISTER = "shva/device/{id}/register"
-TOPIC_CMD = "shva/device/{id}/cmd"
-TOPIC_STATUS = "shva/device/{id}/status"
-TOPIC_RESULT = "shva/device/{id}/result"
-TOPIC_HEARTBEAT = "shva/device/{id}/heartbeat"
+TOPIC_REGISTER = "taffy/device/{id}/register"
+TOPIC_CMD = "taffy/device/{id}/cmd"
+TOPIC_STATUS = "taffy/device/{id}/status"
+TOPIC_RESULT = "taffy/device/{id}/result"
+TOPIC_HEARTBEAT = "taffy/device/{id}/heartbeat"
 
 
 @dataclass

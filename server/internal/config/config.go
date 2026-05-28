@@ -1,4 +1,4 @@
-// Package config 定义 SHVA Server 的配置结构。
+// Package config 定义 Taffy Server 的配置结构。
 // 独立于 handler / database 包，避免循环导入。
 package config
 
@@ -98,7 +98,7 @@ func (c *AppConfig) setDefaults() {
 		c.MySQL.Port = 3306
 	}
 	if c.MySQL.DBName == "" {
-		c.MySQL.DBName = "shva"
+		c.MySQL.DBName = "taffy"
 	}
 	if c.MySQL.MaxOpenConns == 0 {
 		c.MySQL.MaxOpenConns = 20
