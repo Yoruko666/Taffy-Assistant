@@ -1,8 +1,6 @@
 package com.taffy.client.data
 
-/**
- * 设备元信息（来自 GET /api/v1/devices）。
- */
+/** 设备元信息（来自 GET /api/v1/devices）。*/
 data class Device(
     val deviceId: String,
     val ownerId: Long,
@@ -25,9 +23,7 @@ data class DeviceState(
     val position: Int? = null,
 )
 
-/**
- * 设备 + 状态合并视图，UI 直接消费。
- */
+/** 设备 + 状态合并视图，UI 直接消费。*/
 data class DeviceCard(
     val device: Device,
     val state: DeviceState?,
@@ -36,9 +32,7 @@ data class DeviceCard(
     val power: Boolean get() = state?.power == true
 }
 
-/**
- * 登录/注册成功后的 token 信息。
- */
+/** 登录 / 注册成功后的 token 信息。*/
 data class AuthToken(
     val accessToken: String,
     val tokenType: String,
@@ -46,12 +40,19 @@ data class AuthToken(
 )
 
 /**
- * 业务侧统一的结果包装：成功 → [Success]；失败 → [Failure]（含人类可读消息）。
- * 不抛异常穿透到 UI，避免崩溃。
+ * 业务结果包装，不向 UI 抛异常。
+ *
+ * - [Failure.code]     服务端 `error` 字段的业务错误码，供 UI 精确翻译；
+ * - [Failure.message]  服务端 `message` 字段或本地兜底文案；
+ * - [Failure.httpCode] HTTP 状态码，-1 表示网络 / 解码异常未拿到。
  */
 sealed interface ApiResult<out T> {
     data class Success<T>(val value: T) : ApiResult<T>
-    data class Failure(val message: String, val httpCode: Int = -1) : ApiResult<Nothing>
+    data class Failure(
+        val message: String,
+        val httpCode: Int = -1,
+        val code: String? = null,
+    ) : ApiResult<Nothing>
 }
 
 inline fun <T, R> ApiResult<T>.map(transform: (T) -> R): ApiResult<R> = when (this) {

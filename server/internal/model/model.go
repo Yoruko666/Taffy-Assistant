@@ -5,14 +5,14 @@ import "time"
 
 // User 对应 users 表。
 type User struct {
-	UserID       int64  `db:"user_id"       json:"user_id"`
-	Phone        string `db:"phone"         json:"phone,omitempty"`
-	Email        string `db:"email"         json:"email,omitempty"`
-	PasswordHash string `db:"password_hash" json:"-"`
-	Nickname     string `db:"nickname"      json:"nickname"`
-	AvatarURL    string `db:"avatar_url"    json:"avatar_url,omitempty"`
-	CreatedAt    time.Time `db:"created_at"  json:"created_at"`
-	UpdatedAt    time.Time `db:"updated_at"  json:"updated_at"`
+	UserID       int64     `db:"user_id"       json:"user_id"`
+	Phone        string    `db:"phone"         json:"phone,omitempty"`
+	Email        string    `db:"email"         json:"email,omitempty"`
+	PasswordHash string    `db:"password_hash" json:"-"`
+	Nickname     string    `db:"nickname"      json:"nickname"`
+	AvatarURL    string    `db:"avatar_url"    json:"avatar_url,omitempty"`
+	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"    json:"updated_at"`
 }
 
 // DeviceType 设备类型枚举。
@@ -64,13 +64,13 @@ const (
 
 // DeviceState 对应 device_states 表，保存各家具的使用情况。
 type DeviceState struct {
-	DeviceID    string     `db:"device_id"   json:"device_id"`
-	Power       bool       `db:"power"       json:"power"`
-	Brightness  *int       `db:"brightness"  json:"brightness,omitempty"`
-	Temperature *int       `db:"temperature" json:"temperature,omitempty"`
-	Mode        *AirconMode `db:"mode"       json:"mode,omitempty"`
-	Position    *int       `db:"position"    json:"position,omitempty"`
-	UpdatedAt   time.Time  `db:"updated_at"  json:"updated_at"`
+	DeviceID    string      `db:"device_id"   json:"device_id"`
+	Power       bool        `db:"power"       json:"power"`
+	Brightness  *int        `db:"brightness"  json:"brightness,omitempty"`
+	Temperature *int        `db:"temperature" json:"temperature,omitempty"`
+	Mode        *AirconMode `db:"mode"        json:"mode,omitempty"`
+	Position    *int        `db:"position"    json:"position,omitempty"`
+	UpdatedAt   time.Time   `db:"updated_at"  json:"updated_at"`
 }
 
 // Conversation 对应 conversations 表。

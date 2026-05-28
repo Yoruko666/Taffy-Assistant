@@ -6,9 +6,9 @@
 
 ## 项目简介
 
-本项目为一套面向全屋智能场景的语音交互系统，由 **家具端、客户端、服务器、Worker、模型服务** 五部分组成。家具助手名为 **小菲**——一台带麦克风与扬声器的智能家居设备。用户可通过 Android 客户端以文本方式、或对着"小菲"以语音方式与大模型交互，系统自动将自然语言指令解析为对家居设备的控制命令，由服务器分发到家具端执行并反馈状态。
+本项目为一套面向全屋智能场景的语音交互系统，由 **家具端、客户端、服务器、Worker、模型服务** 五部分组成。家具助手名为 **小菲**——一台带麦克风与扬声器的智能家居设备。用户可通过 Android 客户端以文本方式、或对着"小菲"以语音方式与大模型交互，系统将自然语言指令解析为家居设备控制命令，由服务器分发执行并反馈状态。
 
-整体形态对齐主流智能音箱的端云分工（端侧 KWS+VAD，云端 ASR/LLM/TTS）：
+端云分工（端侧 KWS+VAD，云端 ASR/LLM/TTS）：
 
 - **家具端（小菲） = 本地硬件**：跑在音箱 / PC 模拟器上，负责 **录音 → KWS 唤醒词 → VAD 端点检测 → WS 上行 → 播放 TTS**。**断句在端侧做**，不靠云端。
 - **Go Server = 中枢 / 信息接收与转发 + 设备控制执行**：接受家具端 / 客户端的接入，做 JWT 鉴权、用户/设备 CRUD、对话历史落库（MySQL + Redis）、MQTT 设备控制；**不直接对接 AI**，把语音 WS 整段转发给 Worker；同时拦截 Worker 的 `device_command` 事件，执行设备控制（更新 DB + 转发控制指令），将结果回传 Worker 供 LLM 生成最终回复。
@@ -46,7 +46,7 @@
 
 ### 端侧（小菲）的职责链
 
-家具端内部严格按下列流水线工作，**和主流商用智能音箱完全一致**：
+家具端内部按下列流水线工作：
 
 ```
 [麦克风/虚拟音频流] → [KWS 唤醒词检测] → [VAD 端点检测] → [WS 上行 PCM] → [接收 asr_partial/asr_final] → [接收 llm_result] → [恢复 VAD]
@@ -56,11 +56,11 @@
                              Porcupine
 ```
 
-核心设计：
+要点：
 
 - **WS 长连接复用**：一次握手、多轮对话。家具端在同一条 `/v1/voice` 上按需 `start → PCM → end → start → PCM → end → ...`，每个 `end` 触发一次 `asr_final`。
 - **断句归端侧**：`webrtcvad` 监听持续静音 ≥ 800ms 自动发 `end`，不靠 ASR 去切句，避免云端延迟放大。
-- **KWS 抽象**：`WakeWord` 基类预留接口；M2 用 `AlwaysOnWakeWord` 默认一直活跃，M3 替换为 openWakeWord / Porcupine 即可获得"嗨家具"式唤醒，**无需动主流程**。
+- **KWS 抽象**：`WakeWord` 基类预留接口；M2 用 `AlwaysOnWakeWord` 默认一直活跃，M3 可替换为 openWakeWord / Porcupine 实现唤醒词，无需修改主流程。
 
 ### 一次"打开客厅灯"的完整链路
 
@@ -91,7 +91,7 @@
 ```
 Taffy-Assistant/
 ├── README.md                                       # 本文件，项目总览
-├── go.work                                         # Go workspace：串起 server / worker / pkg
+├── go.work                                         # Go workspace：串起 server / worker / pkg/*
 ├── .gitignore                                      # 忽略模型权重 / wheel / 构建产物 / 生成音频
 ├── .gitattributes                                  # 跨平台换行符统一配置
 │
@@ -99,11 +99,19 @@ Taffy-Assistant/
 │   ├── README.md
 │   └── start-all.ps1                               # 一键起全栈：ASR + TTS + Worker + Server
 │
-├── pkg/                                            # 仓库级共享 Go 模块
-│   └── protocol/                                   # Server↔Worker 共享 WS 协议（事件类型 + 结构体）
-│       ├── go.mod                                  # module taffy.local/pkg/protocol
-│       ├── README.md
-│       └── events.go                               # device_info / device_command / device_command_result 等
+├── pkg/                                            # 仓库级共享 Go 模块（独立 go.mod，被 server/worker 通过 go.work 引用）
+│   ├── protocol/                                   # Server↔Worker 共享 WS 协议（事件类型 + 结构体 + action/mode 常量）
+│   │   ├── go.mod                                  # module taffy.local/pkg/protocol
+│   │   ├── README.md
+│   │   └── events.go
+│   ├── wsutil/                                     # WS 通用胶水：Upgrader/Dialer/WriteJSON/IsNormalClose
+│   │   ├── go.mod                                  # module taffy.local/pkg/wsutil
+│   │   ├── go.sum
+│   │   ├── README.md
+│   │   └── wsutil.go
+│   └── httpx/                                      # HTTP 小工具：Getenv + AccessLog 中间件
+│       ├── go.mod                                  # module taffy.local/pkg/httpx
+│       └── httpx.go
 │
 ├── docs/                                           # 项目文档
 │   ├── 00-课程实践考核要求.pdf                       # 课程官方要求
@@ -120,48 +128,60 @@ Taffy-Assistant/
 │   ├── gradle.properties                           # Gradle 属性
 │   ├── gradle/wrapper/gradle-wrapper.properties    # Gradle 8.7
 │   └── app/                                        # 📱 主应用模块
-│       ├── build.gradle.kts                        # 构建配置（Compose + OkHttp）
+│       ├── build.gradle.kts                        # 构建配置（Compose + OkHttp + DataStore）
 │       ├── proguard-rules.pro
 │       └── src/main/
 │           ├── AndroidManifest.xml
 │           ├── res/values/{strings,themes}.xml
 │           └── java/com/taffy/client/
-│               ├── TaffyApplication.kt              # Application 入口
-│               ├── MainActivity.kt                 # 主界面（消息列表）
-│               ├── ui/theme/Theme.kt               # Material 3 主题
+│               ├── TaffyApplication.kt              # Application：单例 TokenStore + ApiClient
+│               ├── MainActivity.kt                 # 仅装主题 + AppNav
+│               ├── data/                            # 数据层
+│               │   ├── ApiClient.kt                # OkHttp + JSON，错误统一 ApiResult
+│               │   ├── Models.kt                   # Device / DeviceState / DeviceCard / AuthToken
+│               │   └── TokenStore.kt               # JWT 持久化（DataStore）
+│               ├── ui/
+│               │   ├── AppNav.kt                   # 顶层路由 login/devices/voice
+│               │   ├── theme/Theme.kt              # Material 3 主题
+│               │   ├── login/                      # 登录/注册（同一页 + Mode 切换）
+│               │   ├── devices/                    # 设备列表 + 卡片 + 状态描述
+│               │   └── voice/                      # 联调期 WS 事件流监视器
 │               └── websocket/ServerWebSocket.kt    # WS 连接管理（自动重连）
 │
-├── server/                                         # Go 服务器（中枢：家具/客户端入口、转发到 worker、MQTT/CRUD）
+├── server/                                         # Go 服务器（中枢：家具/客户端入口、转发到 worker、MQTT/CRUD/对话历史）
 │   ├── README.md
 │   ├── go.mod / go.sum
-│   ├── config.yaml                                 # Worker + MySQL + Redis + JWT 配置
+│   ├── config.yaml                                 # Worker + MySQL + Redis + JWT + MQTT 配置
 │   ├── migrations/                                  # 数据库迁移脚本
 │   │   ├── 001_init.sql                            # 建库建表（7 张表）
 │   │   └── 002_seed.sql                            # 测试种子数据
-│   ├── cmd/server/main.go                          # 入口：加载配置 + 路由注册 + 优雅退出
+│   ├── cmd/server/main.go                          # 入口：依赖装配 + 路由注册 + 优雅退出
 │   └── internal/
-│       ├── config/config.go                         # AppConfig / MySQLConfig / RedisConfig / JWTConfig
-│       ├── model/model.go                           # 数据模型（User/Device/DeviceState/...）
+│       ├── config/config.go                         # AppConfig / MySQL / Redis / JWT / MQTT 配置
+│       ├── model/model.go                           # 数据模型（User/Device/DeviceState/Conversation/...）
 │       ├── database/
-│       │   ├── mysql.go                             # MySQL 连接初始化 + 健康检查
-│       │   └── redis.go                            # Redis 连接初始化 + 健康检查
+│       │   ├── mysql.go                             # MySQL 连接初始化
+│       │   └── redis.go                            # Redis 连接初始化
 │       ├── repository/
 │       │   ├── user.go                             # 用户 CRUD
 │       │   ├── device.go                           # 设备 CRUD
 │       │   ├── device_state.go                     # 设备状态 Upsert
-│       │   └── conversation.go                     # 对话/消息/指令/场景 CRUD
+│       │   └── conversation.go                     # 对话 / 消息 / 指令 / 场景 CRUD
 │       ├── service/
 │       │   ├── user.go                             # 注册/登录/密码校验（bcrypt）
-│       │   ├── device.go                           # 设备创建/状态更新/权限校验
+│       │   ├── device.go                           # 设备创建/状态更新/权限校验（含 MQTT publisher 注入）
+│       │   ├── conversation.go                     # 对话/消息/指令落库 facade
 │       │   ├── voice_context.go                    # /v1/voice 设备上下文构建（推送给 Worker）
-│       │   └── voice_command.go                    # /v1/voice device_command 拦截执行
+│       │   ├── voice_command.go                    # /v1/voice device_command 拦截执行 + MQTT 下发
+│       │   └── mqtt_handlers.go                    # OnStatus / OnResult / OnHeartbeat 回调装配
+│       ├── mqtt/bridge.go                          # MQTT broker 接入：publish cmd + subscribe status/result/heartbeat
 │       ├── middleware/jwt.go                       # JWT 生成/解析/黑名单/RequireAuth
 │       └── handler/
-│           ├── config_compat.go                    # LoadConfig/DefaultConfig 向后兼容
-│           ├── health.go                           # /v1/health（worker/db/redis 状态）
-│           ├── voice.go                            # /v1/voice WS 接入（透传 + 调用 service/voice_*）
-│           ├── voice_proto.go                      # /v1/voice 协议工具：鉴权环境变量 / writeJSON / 事件分类
-│           ├── auth.go                             # /api/v1/auth/register + /login
+│           ├── health.go                           # /v1/health（worker/db/redis/mqtt 状态）
+│           ├── voice.go                            # /v1/voice WS 接入（透传 + 拦截 device_command）
+│           ├── voice_session.go                    # 会话级对话历史落库（asr_final / llm_result / commands）
+│           ├── voice_proto.go                      # /v1/voice 协议工具（鉴权环境变量 / 事件分类）
+│           ├── auth.go                             # /api/v1/auth/register + /login（标准 error code）
 │           └── device.go                           # /api/v1/devices/* 设备与状态 API
 │
 ├── worker/                                         # Go Worker（大模型编排 + Tool Call：ASR / LLM / TTS）
@@ -172,13 +192,19 @@ Taffy-Assistant/
 │   └── internal/handler/
 │       ├── config.go                               # ASR/LLM/TTS 三段配置
 │       ├── health.go                               # /v1/health
-│       ├── orchestrate.go                          # /v1/orchestrate（核心 AI 工作流 + Tool Call）
-│       └── tools.go                                # Tool Schema 定义 + 协议结构体（pkg/protocol 别名）
+│       ├── orchestrate.go                          # /v1/orchestrate WS 主流程 + pump goroutine
+│       ├── session.go                              # 会话级状态容器（写锁 / 设备上下文 / pendingToolCall）
+│       ├── llm.go                                  # callLLMWithTools / callLLMSecondRound + postLLM 公共逻辑
+│       ├── asr.go                                  # translateASREvent（partial → asr_partial）
+│       ├── tts.go                                  # 异步合成并下发 tts_audio
+│       ├── tools.go                                # OpenAI Function Calling schema + LLM 响应结构
+│       └── prompt.go                               # BuildSystemPrompt（注入设备列表 + 规则）
 │
 ├── furniture/                                      # 家具端"小菲"（KWS + VAD + WS 长连接）
 │   ├── README.md                                   # 家具 ↔ server WS 协议契约
 │   ├── requirements.txt                            # websockets / webrtcvad / numpy
-│   └── mock_furniture.py                           # PC 端模拟器：VAD 断句 + LLM 多轮对话
+│   ├── mock_furniture.py                           # PC 端模拟器：VAD 断句 + LLM 多轮对话
+│   └── mock_devices.py                             # 模拟物理设备：响应 server 通过 MQTT 下发的 cmd
 │
 └── model/                                          # 模型服务（ASR + TTS 推理）
     ├── README.md

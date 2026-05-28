@@ -18,9 +18,10 @@ import asyncio
 import base64
 import json
 import sys
+from abc import ABC, abstractmethod
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-from abc import ABC, abstractmethod
 from typing import Optional
 
 try:
@@ -34,16 +35,30 @@ except ImportError as exc:
 
 
 # ---------------------------------------------------------------------------
-# 常量
+# 常量（音频 / VAD / 上行帧）
 # ---------------------------------------------------------------------------
 
-SAMPLE_RATE = 16000
-SAMPLE_WIDTH = 2
-VAD_FRAME_MS = 30
+SAMPLE_RATE = 16000                                                # PCM 采样率
+SAMPLE_WIDTH = 2                                                   # 16-bit LE
+VAD_FRAME_MS = 30                                                  # webrtcvad 单帧时长
 VAD_FRAME_BYTES = SAMPLE_RATE * VAD_FRAME_MS * SAMPLE_WIDTH // 1000  # 960
-UPLINK_CHUNK_MS = 600
+VAD_FRAME_SAMPLES = VAD_FRAME_BYTES // SAMPLE_WIDTH                # 480
+UPLINK_CHUNK_MS = 600                                              # 上行 PCM 单帧时长
 UPLINK_CHUNK_BYTES = SAMPLE_RATE * UPLINK_CHUNK_MS * SAMPLE_WIDTH // 1000  # 19200
-VAD_FRAME_SAMPLES = VAD_FRAME_BYTES // SAMPLE_WIDTH  # 480
+
+# VAD 参数：稍激进的 3 档断句，800ms 静音视为结束、90ms 起搏视为开始。
+VAD_AGGRESSIVENESS = 2
+VAD_SILENCE_MS_DEFAULT = 800
+VAD_MIN_SPEECH_MS = 90
+
+# 在 VAD start 之前回填多少历史音频，避免漏首字。
+LOOKBACK_MS = 300
+
+# 等待 LLM 回复的硬超时（防止永远阻塞）。
+LLM_WAIT_TIMEOUT_S = 300
+
+# 整个会话在 stream_live 结束后等待 receiver 关闭的额外时间。
+RECEIVER_DRAIN_TIMEOUT_S = 15
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +146,11 @@ async def receiver(
 ) -> None:
     """接收服务端事件，输出简洁的对话格式。
 
-    用户说话结束 → 打印 `用户：<asr_final文本>`
-    大模型返回  → 打印 `小菲：<llm_result文本>`
+    协议见 furniture/README.md：
+      asr_final  → "用户：..."
+      llm_result → "小菲：..."
+      llm_error  → "小菲：出错了（...）"
+      tts_audio  → 落盘到 output_dir/tts_<ts>.wav
     """
     try:
         async for msg in ws:
@@ -145,9 +163,9 @@ async def receiver(
             t = evt.get("type", "?")
             cur = evt.get("text", "")
 
-            if t in ("final", "asr_final"):
+            if t == "asr_final":
                 print(f"用户：{cur}")
-            elif t in ("llm_result", "reply"):
+            elif t == "llm_result":
                 if cur:
                     print(f"小菲：{cur}")
                 llm_done.set()
@@ -167,7 +185,7 @@ async def receiver(
                 device_name = evt.get("device", "?")
                 action = evt.get("action", "?")
                 print(f"[device] {device_name} {action} done")
-            elif t in ("pong", "eos"):
+            elif t in ("pong", "eos", "asr_partial"):
                 pass
             elif t == "error":
                 err_msg = evt.get("message", "")
@@ -197,20 +215,17 @@ async def stream_live(
     vad: VadSegmenter,
     llm_done: asyncio.Event,
     device: Optional[str] = None,
-    silence_ms: int = 800,
+    silence_ms: int = VAD_SILENCE_MS_DEFAULT,
 ) -> int:
-    """从真实麦克风实时采集，VAD 断句后推送到 WS。
-
-    VAD end 后暂停采集，等待 llm_done（由 receiver 在收到 llm_result 时设置）后恢复，
-    进入下一轮对话。
+    """从麦克风实时采集，VAD 断句后推送到 WS。
+    VAD end 后暂停采集，等待 llm_done 后恢复，进入下一轮对话。
     """
+    del silence_ms  # 当前函数体内不再使用；保留参数兼容外部调用方
     try:
         import sounddevice as sd
     except ImportError:
         print("[mock-furniture] 需安装 sounddevice：pip install sounddevice")
         sys.exit(1)
-
-    from collections import deque
 
     q: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=100)
 
@@ -256,11 +271,10 @@ async def stream_live(
 
     end_count = 0
     seg_buf = bytearray()
-    lookback_frames = max(0, 300 // VAD_FRAME_MS)
+    lookback_frames = max(0, LOOKBACK_MS // VAD_FRAME_MS)
     pre_buf: "deque[bytes]" = deque(maxlen=lookback_frames)
 
-    # 语音检测暂停标记：大模型处理中不检测新语音
-    vad_paused = False
+    vad_paused = False  # LLM 处理中暂停语音检测
 
     async def flush_segment_buf() -> None:
         nonlocal seg_buf
@@ -277,13 +291,10 @@ async def stream_live(
                     break
                 continue
 
-            # ---- 暂停检测：不处理音频，只等待 llm_done ----
             if vad_paused:
-                # 等待大模型返回（检查事件是否已被设置）
                 try:
-                    await asyncio.wait_for(llm_done.wait(), timeout=300)
+                    await asyncio.wait_for(llm_done.wait(), timeout=LLM_WAIT_TIMEOUT_S)
                 except asyncio.TimeoutError:
-                    # 超时保护：防止永远阻塞
                     print("\n[warning] LLM 等待超时，强制恢复语音检测")
                 llm_done.clear()
                 vad_paused = False
@@ -306,9 +317,8 @@ async def stream_live(
                 await flush_segment_buf()
                 await send_end(ws)
                 end_count += 1
-                # end 后暂停语音检测，等待大模型结果
                 vad_paused = True
-                continue  # 不把当前帧计入 speaking 处理
+                continue
 
             if vad.speaking:
                 seg_buf.extend(frame)
@@ -354,19 +364,22 @@ async def main_async(args: argparse.Namespace) -> int:
         return 3
 
     stop = asyncio.Event()
-    # llm_done：receiver 收到 llm_result 后设置，stream_live 等待后继续
-    llm_done = asyncio.Event()
+    llm_done = asyncio.Event()  # receiver 收到 llm_result 后置位，stream_live 据此恢复
     output_dir = Path(__file__).resolve().parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     recv_task = asyncio.create_task(receiver(ws, stop, llm_done, output_dir))
 
     try:
         wakeword = AlwaysOnWakeWord()
-        vad = VadSegmenter(aggressiveness=2, silence_ms=800, min_speech_ms=90)
+        vad = VadSegmenter(
+            aggressiveness=VAD_AGGRESSIVENESS,
+            silence_ms=VAD_SILENCE_MS_DEFAULT,
+            min_speech_ms=VAD_MIN_SPEECH_MS,
+        )
         await stream_live(ws, wakeword, vad, llm_done, device=args.device)
 
         try:
-            await asyncio.wait_for(stop.wait(), timeout=15)
+            await asyncio.wait_for(stop.wait(), timeout=RECEIVER_DRAIN_TIMEOUT_S)
         except asyncio.TimeoutError:
             pass
     finally:

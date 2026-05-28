@@ -2,22 +2,19 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"taffy.local/pkg/protocol"
 )
 
-// 本文件汇集 /v1/voice WebSocket 透传链路上的协议级工具函数：
-// 仅做编码 / 解码 / 控制流判定，不依赖具体业务。
+// 本文件汇集 /v1/voice WebSocket 透传链路上的协议级工具函数。
+// 通用 WS 胶水（WriteJSON / IsNormalClose / Upgrader / Dialer）见 pkg/wsutil。
 
 // parseAuthFlag 解析 TAFFY_VOICE_AUTH 环境变量。
-// 显式 "off"/"0"/"false"/"no" 关闭鉴权；其他（含未设置）开启。
+// "off"/"0"/"false"/"no"/"disable"/"disabled" 关闭鉴权；其他（含未设置）开启。
 func parseAuthFlag(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "off", "0", "false", "no", "disable", "disabled":
@@ -27,8 +24,8 @@ func parseAuthFlag(v string) bool {
 	}
 }
 
-// buildWorkerURL 在 worker 的 WS URL 上附加 device_id / session_id 等
-// 透传参数，便于 worker 日志关联同一会话。
+// buildWorkerURL 在 worker WS URL 上附加 device_id / session_id 参数，
+// 便于 worker 日志关联同一会话。
 func buildWorkerURL(base, deviceID string) (string, error) {
 	if deviceID == "" {
 		return base, nil
@@ -44,8 +41,7 @@ func buildWorkerURL(base, deviceID string) (string, error) {
 	return u.String(), nil
 }
 
-// isDeviceCommand 判断 worker → server 方向的某条文本帧是否为
-// "请 server 执行设备控制"指令。
+// isDeviceCommand 判断文本帧是否为 worker → server 的设备控制指令。
 func isDeviceCommand(data []byte) bool {
 	var ev map[string]any
 	if err := json.Unmarshal(data, &ev); err != nil {
@@ -55,8 +51,7 @@ func isDeviceCommand(data []byte) bool {
 	return t == protocol.EventTypeDeviceCommand
 }
 
-// logSessionEvent 把 worker → client 的关键事件打一行精简日志，
-// 便于在 server 侧观测会话进度（不影响转发性能）。
+// logSessionEvent 把 worker → client 的关键事件打一行精简日志。
 func logSessionEvent(log *slog.Logger, data []byte) {
 	var ev map[string]any
 	if err := json.Unmarshal(data, &ev); err != nil {
@@ -76,28 +71,4 @@ func logSessionEvent(log *slog.Logger, data []byte) {
 	}
 }
 
-// writeJSON 将 v 序列化为 JSON 后以 TextMessage 发送。
-func writeJSON(c *websocket.Conn, v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return c.WriteMessage(websocket.TextMessage, b)
-}
 
-// isNormalClose 判断 ReadMessage 返回的错误是否属于"对端正常关闭"。
-func isNormalClose(err error) bool {
-	if errors.Is(err, websocket.ErrCloseSent) {
-		return true
-	}
-	var ce *websocket.CloseError
-	if errors.As(err, &ce) {
-		switch ce.Code {
-		case websocket.CloseNormalClosure,
-			websocket.CloseGoingAway,
-			websocket.CloseNoStatusReceived:
-			return true
-		}
-	}
-	return false
-}

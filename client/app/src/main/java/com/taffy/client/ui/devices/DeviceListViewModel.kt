@@ -17,10 +17,8 @@ import kotlinx.coroutines.launch
 
 /**
  * 设备列表页 UI 状态。
- *
- * 设计要点：
- * - 设备 + 状态来自两个独立接口，UI 只关心合并后的 [DeviceCard]，避免在 Compose 里做匹配；
- * - 单设备的开关/亮度等切换走"乐观更新 + 失败回滚"，体感更接近成熟 IoT App。
+ * 设备 + 状态来自两个独立接口，UI 只关心合并后的 [DeviceCard]；
+ * 单设备开关走"乐观更新 + 失败回滚"。
  */
 data class DeviceListUiState(
     val loading: Boolean = false,
@@ -28,7 +26,7 @@ data class DeviceListUiState(
     val cards: List<DeviceCard> = emptyList(),
     val errorMessage: String? = null,
     val unauthorized: Boolean = false,
-    /** 正在切换中的 device_id 集合，UI 上显示 progress。 */
+    /** 正在切换中的 device_id 集合，UI 显示 progress。*/
     val pendingDeviceIds: Set<String> = emptySet(),
 )
 
@@ -53,7 +51,6 @@ class DeviceListViewModel(
             val devicesRes = apiClient.listDevices()
             val statesRes = apiClient.listDeviceStates()
 
-            // 任意一个 401 表示登录态失效
             if (isUnauthorized(devicesRes) || isUnauthorized(statesRes)) {
                 tokenStore.clear()
                 _uiState.update { it.copy(loading = false, refreshing = false, unauthorized = true) }
@@ -79,7 +76,7 @@ class DeviceListViewModel(
         }
     }
 
-    /** 切换电源（开/关）。乐观更新 + 失败回滚。 */
+    /** 切换电源开关。乐观更新 + 失败回滚。*/
     fun togglePower(card: DeviceCard) {
         if (!card.online) {
             _uiState.update { it.copy(errorMessage = "${card.device.name} 已离线，无法控制") }
@@ -88,7 +85,6 @@ class DeviceListViewModel(
         val target = !card.power
         val deviceId = card.device.deviceId
 
-        // 标记 pending + 乐观更新
         _uiState.update { s ->
             s.copy(
                 pendingDeviceIds = s.pendingDeviceIds + deviceId,
@@ -105,7 +101,6 @@ class DeviceListViewModel(
                     _uiState.update { it.copy(unauthorized = true, pendingDeviceIds = it.pendingDeviceIds - deviceId) }
                     return@launch
                 }
-                // 回滚
                 _uiState.update { s ->
                     s.copy(
                         pendingDeviceIds = s.pendingDeviceIds - deviceId,

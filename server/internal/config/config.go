@@ -1,5 +1,4 @@
 // Package config 定义 Taffy Server 的配置结构。
-// 独立于 handler / database 包，避免循环导入。
 package config
 
 import (
@@ -74,16 +73,27 @@ func (c *JWTConfig) RefreshTTLDuration() time.Duration {
 	return d
 }
 
+// MQTTConfig MQTT broker 接入配置。空 broker 表示禁用 MQTT bridge。
+type MQTTConfig struct {
+	// Broker 形如 "tcp://127.0.0.1:1883"，留空则禁用。
+	Broker   string `yaml:"broker"`
+	ClientID string `yaml:"client_id"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// QoS 默认 1，0~2。
+	QoS byte `yaml:"qos"`
+}
+
 // AppConfig Server 顶层配置。
 type AppConfig struct {
 	Worker WorkerConfig `yaml:"worker"`
 	MySQL  MySQLConfig  `yaml:"mysql"`
 	Redis  RedisConfig  `yaml:"redis"`
 	JWT    JWTConfig    `yaml:"jwt"`
+	MQTT   MQTTConfig   `yaml:"mqtt"`
 }
 
-// setDefaults 填充零值字段为合理的默认值。
-// 环境变量优先级高于 YAML 中的值，便于容器化部署。
+// setDefaults 用合理默认值填充零值字段；环境变量优先级高于 YAML。
 func (c *AppConfig) setDefaults() {
 	if c.Worker.WSURL == "" {
 		c.Worker.WSURL = "ws://127.0.0.1:8090/v1/orchestrate"
@@ -133,6 +143,23 @@ func (c *AppConfig) setDefaults() {
 	if v := os.Getenv("JWT_SECRET"); v != "" {
 		c.JWT.Secret = v
 	}
+
+	// MQTT
+	if c.MQTT.QoS == 0 {
+		c.MQTT.QoS = 1
+	}
+	if c.MQTT.ClientID == "" {
+		c.MQTT.ClientID = "taffy-server"
+	}
+	if v := os.Getenv("MQTT_BROKER"); v != "" {
+		c.MQTT.Broker = v
+	}
+	if v := os.Getenv("MQTT_USERNAME"); v != "" {
+		c.MQTT.Username = v
+	}
+	if v := os.Getenv("MQTT_PASSWORD"); v != "" {
+		c.MQTT.Password = v
+	}
 }
 
 // LoadConfig 从 YAML 文件加载 server 配置。
@@ -150,8 +177,8 @@ func LoadConfig(path string) (*AppConfig, error) {
 	return &cfg, nil
 }
 
-// DefaultConfig 返回一个仅包含默认值（含环境变量覆盖）的配置，
-// 用于 YAML 文件不存在 / 解析失败时的降级。
+// DefaultConfig 返回仅含默认值（含环境变量覆盖）的配置，
+// 用于 YAML 文件不存在或解析失败时的降级。
 func DefaultConfig() *AppConfig {
 	cfg := &AppConfig{}
 	cfg.setDefaults()

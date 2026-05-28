@@ -11,9 +11,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 服务端 WebSocket 连接管理器。
- *
- * 连接到 Go Server 的 /v1/voice 端点，被动接收服务端推送的消息
- * （asr_partial / asr_final / llm_result / llm_error / eos 等）。
+ * 连接 Go Server 的 /v1/voice 端点，被动接收 asr_* / llm_* / tts_audio 等推送。
+ * 断开后按 [RECONNECT_DELAY_MS] 间隔自动重连。
  */
 class ServerWebSocket(
     private val onMessage: (String) -> Unit,
@@ -23,7 +22,6 @@ class ServerWebSocket(
         private const val TAG = "ServerWS"
         private const val DEVICE_ID = "android_client"
         private const val TOKEN = "t1"
-        // 重连间隔
         private const val RECONNECT_DELAY_MS = 3000L
     }
 
@@ -34,19 +32,17 @@ class ServerWebSocket(
     }
 
     private val client = OkHttpClient.Builder()
-        .readTimeout(0, TimeUnit.SECONDS)  // 长连接不超时
+        .readTimeout(0, TimeUnit.SECONDS)   // 长连接不超时
         .pingInterval(15, TimeUnit.SECONDS) // 自动心跳
         .build()
 
     private var webSocket: WebSocket? = null
     private var shouldReconnect = true
 
-    /** 连接地址: ws://host:port/v1/voice?device_id=...&token=... */
     private val serverUrl: String
         get() = "ws://${BuildConfig.SERVER_HOST}:${BuildConfig.SERVER_PORT}" +
                 "/v1/voice?device_id=$DEVICE_ID&token=$TOKEN"
 
-    /** 建立连接。*/
     fun connect() {
         if (webSocket != null) return
         shouldReconnect = true
@@ -90,7 +86,6 @@ class ServerWebSocket(
         })
     }
 
-    /** 断开连接。*/
     fun disconnect() {
         shouldReconnect = false
         webSocket?.close(1000, "client shutdown")

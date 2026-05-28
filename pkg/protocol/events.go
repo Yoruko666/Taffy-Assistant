@@ -1,18 +1,12 @@
 // Package protocol 定义 Server ↔ Worker 共享的 JSON 协议结构体与事件类型常量。
 //
-// 设计原则：
-//   - 仅放双方都要解析的纯数据结构，不放业务逻辑、不依赖任何具体框架。
-//   - 字段命名严格对齐 OpenAI Function Calling / 现有线上协议，禁止任意改动。
-//   - 任意修改都会同时影响 server 与 worker，PR 审查时务必两端一起看。
-//
-// 通过仓库根 go.work 被 server / worker 引用；module path 取本地占位
-// "taffy.local/..."，不会发布到任何 module proxy。
+// 仅放双方都要解析的纯数据结构，不放业务逻辑、不依赖任何具体框架。
+// 字段命名严格对齐 OpenAI Function Calling 与现有协议；任何修改请同步两端。
 package protocol
 
 import "encoding/json"
 
 // 事件 type 字段常量。
-
 const (
 	EventTypeDeviceInfo          = "device_info"           // Server → Worker：会话建立后推送当前用户设备列表
 	EventTypeDeviceCommand       = "device_command"        // Worker → Server：LLM tool call 触发的设备控制请求
@@ -20,15 +14,58 @@ const (
 )
 
 // LLM 工具函数名常量。
-
 const (
 	FunctionControlDevice = "control_device"
 	FunctionActivateScene = "activate_scene"
 )
 
-// DeviceContext 是 Server 推给 Worker 的"用户当前设备快照"。
-// Worker 拿到后注入 system prompt，让 LLM 知道有哪些 device_id 可控。
-// 可选字段（亮度等）使用指针 + omitempty，未赋值不会出现在 JSON。
+// control_device.action 的合法取值。
+const (
+	ActionTurnOn         = "turn_on"
+	ActionTurnOff        = "turn_off"
+	ActionSetBrightness  = "set_brightness"
+	ActionSetTemperature = "set_temperature"
+	ActionSetMode        = "set_mode"
+	ActionSetPosition    = "set_position"
+)
+
+// AllControlActions 列出所有支持的 control_device.action，用于 LLM tool schema 的 enum。
+func AllControlActions() []string {
+	return []string{
+		ActionTurnOn, ActionTurnOff,
+		ActionSetBrightness, ActionSetTemperature,
+		ActionSetMode, ActionSetPosition,
+	}
+}
+
+// 空调模式取值。
+const (
+	ModeCool = "cool"
+	ModeHeat = "heat"
+	ModeAuto = "auto"
+	ModeFan  = "fan"
+	ModeDry  = "dry"
+)
+
+// AllAirconModes 列出所有空调模式，用于 LLM tool schema 的 enum。
+func AllAirconModes() []string {
+	return []string{ModeCool, ModeHeat, ModeAuto, ModeFan, ModeDry}
+}
+
+// AirconModeLabels 空调模式 → 中文名映射，用于 LLM 反馈与 UI 展示。
+func AirconModeLabels() map[string]string {
+	return map[string]string{
+		ModeCool: "制冷",
+		ModeHeat: "制热",
+		ModeAuto: "自动",
+		ModeFan:  "送风",
+		ModeDry:  "除湿",
+	}
+}
+
+// DeviceContext Server 推给 Worker 的"用户当前设备快照"，
+// Worker 注入到 LLM system prompt。
+// 可选字段使用指针 + omitempty，未赋值不会出现在 JSON。
 type DeviceContext struct {
 	DeviceID    string `json:"device_id"`
 	Name        string `json:"name"`
@@ -71,7 +108,7 @@ type ActivateSceneParams struct {
 }
 
 // DeviceCommandEvent type=device_command 整帧。
-// Worker → Server 方向：Worker 在 LLM 返回 tool_calls 后，把 arguments 原样塞到 Params。
+// Worker 在 LLM 返回 tool_calls 后，把 arguments 原样塞到 Params。
 type DeviceCommandEvent struct {
 	Type     string          `json:"type"`
 	ToolID   string          `json:"tool_id"`
@@ -79,8 +116,8 @@ type DeviceCommandEvent struct {
 	Params   json.RawMessage `json:"params"`
 }
 
-// DeviceCommandResultEvent type=device_command_result 整帧。
-// Server → Worker 方向，承载执行结果，给 LLM 二次调用作为 tool message。
+// DeviceCommandResultEvent type=device_command_result 整帧，
+// 给 LLM 二轮调用作为 tool message。
 type DeviceCommandResultEvent struct {
 	Type    string `json:"type"`
 	ToolID  string `json:"tool_id"`

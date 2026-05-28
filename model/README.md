@@ -333,9 +333,10 @@ PASS: 6/6
 
 - [x] 流式 ASR WebSocket 接口（主接口）与联调脚本
 - [x] Go Worker 完成 `/v1/orchestrate` WS 透传层（见 [`worker/README.md`](../worker/README.md)）
-- [x] Go Worker 接入云端 LLM + Function Calling（config.yaml + $env:LLM_API_KEY）
-- [ ] Go Server/Worker 接入 MQTT 设备控制与 TTS 回播
+- [x] Go Worker 接入云端 LLM + Function Calling（config.yaml + `$env:LLM_API_KEY`）
+- [x] Go Worker 接入 TTS（异步合成 → `tts_audio` 下发家具端播放）
+- [x] Go Server 接入 MQTT 设备控制（cmd 下发 + status / heartbeat / result 订阅）
 - [ ] ASR / TTS 接入 Go Server 的健康巡检（`/v1/health`）
-- [ ] 家具端协议落地（见 [`furniture/README.md`](../furniture/README.md)）
+- [x] 家具端协议落地（见 [`furniture/README.md`](../furniture/README.md)）
 
 > 详细架构与契约见 [`docs/03-软件设计文档.md`](../docs/03-软件设计文档.md) §3.3 与 §4.6。

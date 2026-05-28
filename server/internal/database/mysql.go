@@ -1,11 +1,9 @@
 package database
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 
@@ -31,15 +29,3 @@ func InitMySQL(cfg *config.MySQLConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-// HealthCheck 检查 MySQL 连接是否可用，返回状态字符串。
-func HealthCheck(db *sql.DB) string {
-	if db == nil {
-		return "not_configured"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		return "error"
-	}
-	return "ok"
-}

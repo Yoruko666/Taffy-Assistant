@@ -18,12 +18,12 @@ import com.taffy.client.ui.login.LoginScreen
 import com.taffy.client.ui.voice.VoiceChatScreen
 
 /**
- * 顶层导航：根据持久化的 token 决定起点路由。
+ * 顶层路由。
+ *   login    登录 / 注册（未登录默认）
+ *   devices  设备列表（已登录默认，UC-03）
+ *   voice    语音对话（联调期 WS 消息流诊断窗口）
  *
- * 路由表：
- *   - login   登录 / 注册（未登录默认）
- *   - devices 设备列表（已登录默认，UC-03）
- *   - voice   语音对话（联调期 WS 消息流诊断窗口）
+ * 起点路由由持久化 token 决定，仅在首次进入时计算。
  */
 object Routes {
     const val LOGIN = "login"
@@ -36,7 +36,6 @@ fun AppNav() {
     val context = LocalContext.current
     val app = context.applicationContext as TaffyApplication
 
-    // 用 token 是否存在决定 startDestination；只在首次进入时计算一次。
     val token by app.tokenStore.tokenFlow.collectAsState(initial = null)
     var startResolved by remember { mutableStateOf(false) }
     var start by remember { mutableStateOf(Routes.LOGIN) }
@@ -78,7 +77,7 @@ private fun NavHostController.toDevices() {
 
 private fun NavHostController.toLogin() {
     navigate(Routes.LOGIN) {
-        popUpTo(0) { inclusive = true } // 清空回退栈
+        popUpTo(0) { inclusive = true }
         launchSingleTop = true
     }
 }

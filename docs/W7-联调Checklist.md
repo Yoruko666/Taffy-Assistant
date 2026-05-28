@@ -83,7 +83,7 @@ go run ./cmd/server     # :8080
 
 | 检查项 | 操作 | 绿灯标准 |
 |---|---|---|
-| ① Server 健康 | `curl http://127.0.0.1:8080/v1/health` | `worker=ok / mysql=ok / redis=ok` 三项全亮 |
+| ① Server 健康 | `curl http://127.0.0.1:8080/v1/health` | `worker=configured / db=ok / redis=ok / mqtt=ok|not_configured` 四项符合预期 |
 | ② Server 拨号 worker | 起 `mock_furniture.py --server ws://127.0.0.1:8080/...` | server 日志 `worker connected`，无 `dial worker failed` |
 | ③ device_info 同步推送 | server 日志 | `device context pushed devices=N`，且**先于** `event type=asr_final` 出现 |
 | ④ device_command 拦截 | 说"打开客厅灯"，看 server 日志 | `device command received function=control_device` → `device command result success=true` |

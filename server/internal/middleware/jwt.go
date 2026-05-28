@@ -108,16 +108,14 @@ func (m *JWTMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 			return
 		}
-		// 将 user_id 注入请求上下文
 		ctx := context.WithValue(r.Context(), CtxKeyUserID, claims.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
-// CtxKeyUserID 上下文中 user_id 的 key。
+// CtxKeyUserID 上下文中 user_id 的 key 实例。
 type ctxKeyUserID struct{}
 
-// CtxKeyUserID 上下文 key 实例。
 var CtxKeyUserID = ctxKeyUserID{}
 
 // UserIDFromContext 从上下文提取 user_id。

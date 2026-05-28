@@ -32,23 +32,25 @@ client/
             ├── TaffyApplication.kt           # Application 入口（持有 TokenStore + ApiClient 单例）
             ├── MainActivity.kt              # 仅承载 AppNav
             ├── data/
-            │   ├── ApiClient.kt             # OkHttp 封装的 REST 客户端（auth + devices）
-            │   ├── Models.kt                # Device / DeviceState / DeviceCard / AuthToken / ApiResult
+            │   ├── ApiClient.kt             # OkHttp 封装的 REST 客户端（auth + devices），错误统一为 ApiResult
+            │   ├── Models.kt                # Device / DeviceState / DeviceCard / AuthToken / ApiResult(code+message+httpCode)
             │   └── TokenStore.kt            # JWT 持久化（Jetpack DataStore）
             ├── ui/
-            │   ├── AppNav.kt                # Navigation Compose 顶层路由
+            │   ├── AppNav.kt                # Navigation Compose 顶层路由（login / devices / voice）
             │   ├── login/
-            │   │   ├── LoginScreen.kt       # 登录 / 注册（同页切换）
-            │   │   └── LoginViewModel.kt
+            │   │   ├── LoginScreen.kt       # 登录 / 注册（同页 Mode 切换）
+            │   │   └── LoginViewModel.kt    # 按 server error code 翻译中文文案
             │   ├── devices/
-            │   │   ├── DeviceListScreen.kt  # UC-03 设备列表 + 卡片开关
-            │   │   └── DeviceListViewModel.kt
+            │   │   ├── DeviceListScreen.kt  # UC-03 列表骨架（顶栏 / 加载态 / 空态）
+            │   │   ├── DeviceCard.kt        # 单卡片：图标 + 名称 + 状态 chip + 开关
+            │   │   ├── DeviceFormat.kt      # 状态副标题拼装（"亮度 80%  26°C 制冷"）
+            │   │   └── DeviceListViewModel.kt # 乐观更新 + 失败回滚 + 401 跳登录
             │   ├── voice/
-            │   │   └── VoiceChatScreen.kt   # 语音对话（联调期 WS 消息流诊断窗口）
+            │   │   └── VoiceChatScreen.kt   # 语音对话（联调期 WS 监视器，消息上限 500 条自动裁剪）
             │   └── theme/
-            │       └── Theme.kt             # Material 3 亮/暗主题
+            │       └── Theme.kt             # Material 3 亮 / 暗主题
             └── websocket/
-                └── ServerWebSocket.kt       # WebSocket 连接管理（自动重连）
+                └── ServerWebSocket.kt       # WebSocket 连接管理（自动重连，3s 退避）
 ```
 
 ## 前置要求
@@ -123,13 +125,13 @@ buildConfigField("int", "SERVER_PORT", "8080")
 
 | 功能 | 状态 |
 |---|---|
-| 用户注册 / 登录（手机号 + 密码） | ✅ POST /api/v1/auth/{register,login} |
+| 用户注册 / 登录（手机号 + 密码） | ✅ POST /api/v1/auth/{register,login}，按 server error code 翻译 |
 | JWT 持久化（DataStore） | ✅ 启动自动恢复登录态 |
 | 设备列表（按用户隔离） | ✅ GET /api/v1/devices + /devices/states |
 | 设备开关（卡片即点即生效） | ✅ PUT /api/v1/devices/state（乐观更新+失败回滚） |
 | 离线设备保护 | ✅ status=offline 的设备禁止控制 |
 | 401 自动登出 | ✅ token 过期回到登录页 |
-| 语音对话页（WS 监听） | ✅ 联调期诊断窗口，展示 asr_*/llm_*/tts_audio |
+| 语音对话页（WS 监听） | ✅ 联调期诊断窗口，最多保留 500 条消息后自动裁剪 |
 | 录音按钮 / 文本对话上行 | 📅 计划中 |
 | 设备详情页（亮度/温度滑块） | 📅 计划中 |
 
@@ -140,6 +142,18 @@ buildConfigField("int", "SERVER_PORT", "8080")
 | `13800000001` | `password123` | 7 |
 | `13800000002` | `password123` | 4 |
 
+## 错误码契约（与 server 对齐）
+
+Server REST 4xx/5xx 响应固定格式：
+
+```json
+{ "error": "<machine_code>", "message": "<human readable>" }
+```
+
+`ApiClient.parseErrorBody` 解析为 `ApiResult.Failure(message, httpCode, code)`，UI 层应**优先按 `code` 翻译**本地化文案，仅在 code 缺失时回退到 `message` 子串匹配。
+
+当前 LoginViewModel 已支持的 code → 中文映射见 [`ui/login/LoginViewModel.kt`](app/src/main/java/com/taffy/client/ui/login/LoginViewModel.kt) 的 `humanize`，新增 code 时同步更新即可。Server 端 code 清单见 [`server/README.md` § REST 错误响应契约](../server/README.md#rest-错误响应契约)。
+
 ## 网络架构
 
 ```
@@ -148,6 +162,8 @@ Android App ──WSS──> Go Server :8080  (WebSocket 实时消息)
 ```
 
 客户端**只连接 Go Server 一个端点**，所有 AI 能力由 Go Server 内部编排。客户端不录音、不上传音频。
+
+> **联调提示**：当前 [`websocket/ServerWebSocket.kt`](app/src/main/java/com/taffy/client/websocket/ServerWebSocket.kt) 把 `device_id=android_client&token=t1` **硬编码**在源码里，是为了直接走 server `/v1/voice`（家具端协议端点）做调试。生产环境请把客户端 WS 通道拆出来用 JWT 鉴权（见 [`server/README.md` 后续工作](../server/README.md#后续工作)）。当前开发期可通过设环境变量 `TAFFY_VOICE_AUTH=off` 跳过 server 端的设备凭据校验。
 
 ## 依赖
 

@@ -29,15 +29,3 @@ func InitRedis(cfg *config.RedisConfig) (*redis.Client, error) {
 	return rdb, nil
 }
 
-// RedisHealthCheck 检查 Redis 连接是否可用。
-func RedisHealthCheck(rdb *redis.Client) string {
-	if rdb == nil {
-		return "not_configured"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		return "error"
-	}
-	return "ok"
-}

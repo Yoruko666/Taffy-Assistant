@@ -33,9 +33,8 @@ type AppConfig struct {
 	TTS TTSConfig `yaml:"tts"`
 }
 
-// setDefaults 填充零值字段为合理的默认值。
-// APIKey 优先从环境变量 LLM_API_KEY 读取，其次才用 YAML 中的值。
-// ASR_WS_URL / TTS_URL 同样支持环境变量覆盖，便于容器化部署。
+// setDefaults 用合理默认值填充零值字段。
+// APIKey / ASR_WS_URL / TTS_URL 支持环境变量覆盖。
 func (c *AppConfig) setDefaults() {
 	if c.ASR.WSURL == "" {
 		c.ASR.WSURL = "ws://127.0.0.1:9100/v1/asr/stream"
@@ -74,8 +73,8 @@ func LoadConfig(path string) (*AppConfig, error) {
 	return &cfg, nil
 }
 
-// DefaultConfig 返回一个仅包含默认值（含环境变量覆盖）的配置，
-// 用于 YAML 文件不存在 / 解析失败时的降级。
+// DefaultConfig 返回仅含默认值（含环境变量覆盖）的配置，
+// 用于 YAML 文件不存在或解析失败时的降级。
 func DefaultConfig() *AppConfig {
 	cfg := &AppConfig{}
 	cfg.setDefaults()

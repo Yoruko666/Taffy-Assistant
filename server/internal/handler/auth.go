@@ -23,6 +23,18 @@ func NewAuthHandler(userSvc *service.UserService, jwtMW *middleware.JWTMiddlewar
 	return &AuthHandler{userSvc: userSvc, jwtMW: jwtMW, cfg: cfg}
 }
 
+// 业务错误码常量，客户端按 code 翻译本地化文案。
+const (
+	codeInvalidBody       = "invalid_request_body"
+	codePhoneOrEmailReq   = "phone_or_email_required"
+	codePhoneRequired     = "phone_required"
+	codePasswordTooShort  = "password_too_short"
+	codeDuplicatePhone    = "phone_already_registered"
+	codeDuplicateEmail    = "email_already_registered"
+	codeInvalidCredential = "invalid_phone_or_password"
+	codeInternal          = "internal_error"
+)
+
 // RegisterRequest 注册请求体。
 type RegisterRequest struct {
 	Phone    string `json:"phone"`
@@ -48,37 +60,37 @@ type TokenResponse struct {
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		writeAPIError(w, http.StatusBadRequest, codeInvalidBody, "invalid request body")
 		return
 	}
 	if req.Phone == "" && req.Email == "" {
-		writeJSONError(w, http.StatusBadRequest, "phone or email is required")
+		writeAPIError(w, http.StatusBadRequest, codePhoneOrEmailReq, "phone or email is required")
 		return
 	}
 	if req.Password == "" || len(req.Password) < 6 {
-		writeJSONError(w, http.StatusBadRequest, "password must be at least 6 characters")
+		writeAPIError(w, http.StatusBadRequest, codePasswordTooShort, "password must be at least 6 characters")
 		return
 	}
 
 	id, err := h.userSvc.Register(r.Context(), req.Phone, req.Email, req.Password, req.Nickname)
 	if err != nil {
 		if errors.Is(err, service.ErrDuplicatePhone) {
-			writeJSONError(w, http.StatusConflict, "phone already registered")
+			writeAPIError(w, http.StatusConflict, codeDuplicatePhone, "phone already registered")
 			return
 		}
 		if errors.Is(err, service.ErrDuplicateEmail) {
-			writeJSONError(w, http.StatusConflict, "email already registered")
+			writeAPIError(w, http.StatusConflict, codeDuplicateEmail, "email already registered")
 			return
 		}
 		slog.Error("register failed", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
 	accessToken, err := h.jwtMW.GenerateAccessToken(id, h.cfg.JWT.AccessTTLDuration())
 	if err != nil {
 		slog.Error("generate token failed", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -89,36 +101,36 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // Login POST /api/v1/auth/login
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		writeAPIError(w, http.StatusBadRequest, codeInvalidBody, "invalid request body")
 		return
 	}
 	if req.Phone == "" {
-		writeJSONError(w, http.StatusBadRequest, "phone is required")
+		writeAPIError(w, http.StatusBadRequest, codePhoneRequired, "phone is required")
 		return
 	}
 
 	user, err := h.userSvc.Login(r.Context(), req.Phone, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) || errors.Is(err, service.ErrInvalidPassword) {
-			writeJSONError(w, http.StatusUnauthorized, "invalid phone or password")
+			writeAPIError(w, http.StatusUnauthorized, codeInvalidCredential, "invalid phone or password")
 			return
 		}
 		slog.Error("login failed", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
 	accessToken, err := h.jwtMW.GenerateAccessToken(user.UserID, h.cfg.JWT.AccessTTLDuration())
 	if err != nil {
 		slog.Error("generate token failed", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -128,12 +140,21 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		ExpiresIn:   int64(h.cfg.JWT.AccessTTLDuration().Seconds()),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// writeJSONError 写入 JSON 错误响应。
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
+// writeAPIError 写入标准 JSON 错误响应：{"error":"<code>","message":"<text>"}。
+func writeAPIError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":   code,
+		"message": message,
+	})
+}
+
+// writeJSONError 写入仅含 error 字段的简化错误响应。
+// Deprecated: 新代码请用 writeAPIError(w, status, code, message)。
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeAPIError(w, status, msg, msg)
 }

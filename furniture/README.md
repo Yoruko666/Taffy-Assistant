@@ -29,7 +29,7 @@ python furniture/mock_furniture.py --list-devices
 
 ### 1.3 端侧行为：VAD 暂停 / 恢复
 
-每次 VAD 检测到用户说完（静音 ≥ 800ms → 自动发 `end`）后：
+每次 VAD 检测到用户说完（默认静音 ≥ `VAD_SILENCE_MS_DEFAULT = 800ms` → 自动发 `end`）后：
 
 1. **暂停语音检测**，不再采集下一段音频；
 2. 等待 Server 经过 ASR + LLM 链路后返回结果；
@@ -38,6 +38,16 @@ python furniture/mock_furniture.py --list-devices
 这样避免 LLM 处理期间用户的新语音和旧结果混淆，形成自然的**用户说 → 机器答 → 用户再说**对话节奏。
 
 > 实现细节：`mock_furniture.py` 内部用 `asyncio.Event` 同步：`stream_live`（VAD + 上行）发完 `end` 后等待 `llm_done` 事件，`receiver` 收到 `llm_result` 后设置该事件，恢复 VAD。
+>
+> 关键调参常量均集中在文件顶部 `# 常量` 段，可按需调整：
+>
+> | 常量 | 默认 | 含义 |
+> |---|---|---|
+> | `VAD_AGGRESSIVENESS` | 2 | webrtcvad 攻击性（0~3，越大越严格） |
+> | `VAD_SILENCE_MS_DEFAULT` | 800 | 静音多少毫秒视为说话结束 |
+> | `VAD_MIN_SPEECH_MS` | 90 | 至少多少毫秒持续语音才认为开始 |
+> | `LOOKBACK_MS` | 300 | VAD start 时回填多少历史音频，避免漏首字 |
+> | `LLM_WAIT_TIMEOUT_S` | 300 | 等待 `llm_result` 的硬超时（防永久阻塞） |
 
 ### 1.4 Tool Call 流程
 
@@ -45,11 +55,15 @@ python furniture/mock_furniture.py --list-devices
 
 1. ASR 识别文本 → Worker 调用 LLM（携带设备上下文 + Tool Schema）
 2. LLM 返回 `tool_calls`（如 `control_device`）→ Worker 下发 `device_command` 给 Server
-3. Server 执行设备控制（更新 DB）→ 回复 `device_command_result` 给 Worker
-4. Worker 二次调用 LLM（携带 tool 执行结果）→ LLM 生成自然语言回复
-5. Worker 回传 `llm_result` → 家具端显示回复
+3. Server 执行设备控制：
+   - 更新 `device_states` 表
+   - 若 MQTT bridge 启用，同步往 `taffy/device/{id}/cmd` publish 一条指令（best-effort）
+   - 整条 user / assistant / command 链路同步写入 `conversations / messages / commands` 表
+4. Server 回复 `device_command_result` 给 Worker
+5. Worker 二次调用 LLM（携带 tool 执行结果）→ LLM 生成自然语言回复
+6. Worker 回传 `llm_result` → 家具端显示回复（顺带 `tts_audio` 异步下发）
 
-家具端感知上与之前完全一致——只收到 `llm_result`，中间的 tool call 过程对家具端透明。
+家具端感知上保持简洁——只收到 `llm_result` / `tts_audio`，中间的 tool call、对话落库、MQTT 转发对家具端透明。
 
 ---
 
@@ -70,6 +84,17 @@ python furniture/mock_devices.py --standalone --devices light_living,aircon_bedr
 ### 2.2 设备命名
 
 设备命名格式：`<type>_<room>`，如 `light_living` / `aircon_bedroom` / `curtain_living`。
+
+### 2.3 与 Server 的对接
+
+Server 端 [`internal/mqtt/bridge.go`](../server/internal/mqtt/bridge.go) 已实现完整的 broker 接入：
+
+- 配置 `server/config.yaml > mqtt.broker = "tcp://127.0.0.1:1883"` 后 server 启动时自动连接；
+- `mock_devices.py` 收到的 `cmd` 即来自 server 的语音控制链路（`device_command` → `ExecuteControlDevice` → MQTT publish）；
+- `mock_devices.py` 发出的 `status` / `heartbeat` 会被 server 解析并同步进 `device_states` / `devices.last_seen`；
+- `register` / `result` 主题 server 端**只做日志记录**，未来打算分别用于"自动入库 + 工单结果回填 commands.result"。
+
+完整端到端联调步骤见仓库根 `README.md` "快速开始"。
 
 ---
 
@@ -96,7 +121,7 @@ python furniture/mock_devices.py --standalone --devices light_living,aircon_bedr
 | Server→家具 | text | `{"type":"tts_audio","format":"wav","data":"<base64>"}`（M3：语音回播） |
 | Server→家具 | text | `{"type":"error","message":"..."}`（其他错误） |
 
-> 历史事件 `reply` / `device_done` 已废弃：大模型回复统一走 `llm_result`；设备执行结果在 Server↔Worker 内部用 `device_command_result` 闭环，不会回传到家具端。
+> 旧版协议曾使用 `reply` / `device_done` 等命名，当前统一为 `llm_result`，设备执行结果在 Server↔Worker 内部用 `device_command_result` 闭环，不回传到家具端。
 
 > `tts_audio` 由家具端保存或播放（`mock_furniture.py` 当前保存到 `furniture/output/`）。
 

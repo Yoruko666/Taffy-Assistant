@@ -14,11 +14,8 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * REST 客户端（仅当前模块使用，刻意不抽象成 Retrofit 以减少依赖）。
- *
- * - 所有调用都在 [Dispatchers.IO] 上挂起；
- * - 业务/网络异常一律收敛到 [ApiResult.Failure]，不向 UI 抛异常；
- * - 已登录请求由 ViewModel 显式传 token，不在本类内部读取，方便测试。
+ * REST 客户端：所有调用在 [Dispatchers.IO] 上挂起，
+ * 业务/网络异常一律收敛到 [ApiResult.Failure]，不向 UI 抛异常。
  *
  * 与 server 端的契约见 server/internal/handler/{auth,device}.go。
  */
@@ -136,8 +133,8 @@ class ApiClient(private val tokenStore: TokenStore) {
 
     /**
      * 实际执行请求。失败统一返回 [ApiResult.Failure]。
-     * - 2xx 期望 body 是 JSON object；空 body 返回 `{}`。
-     * - 非 2xx 尝试解析 `{"error":"..."}`，否则用 statusLine。
+     * 2xx 期望 body 是 JSON object（空 body 视为 `{}`）；
+     * 非 2xx 解析 `{"error":"<code>","message":"<text>"}` 给出 code + message。
      */
     private fun execute(builder: Request.Builder): ApiResult<JSONObject> {
         return try {
@@ -148,8 +145,8 @@ class ApiClient(private val tokenStore: TokenStore) {
                         .getOrElse { return@use ApiResult.Failure("响应不是合法 JSON: $raw", resp.code) }
                     ApiResult.Success(obj)
                 } else {
-                    val msg = parseErrorMessage(raw) ?: "HTTP ${resp.code}"
-                    ApiResult.Failure(msg, resp.code)
+                    val (code, message) = parseErrorBody(raw, resp.code)
+                    ApiResult.Failure(message, resp.code, code)
                 }
             }
         } catch (e: IOException) {
@@ -159,10 +156,22 @@ class ApiClient(private val tokenStore: TokenStore) {
         }
     }
 
-    private fun parseErrorMessage(raw: String): String? = try {
-        if (raw.isBlank()) null else JSONObject(raw).optString("error").takeIf { it.isNotBlank() }
-    } catch (_: JSONException) {
-        null
+    /**
+     * 解析服务端错误体 `{"error":"<code>","message":"<human>"}`，
+     * 返回的 message 永远非空。
+     */
+    private fun parseErrorBody(raw: String, httpCode: Int): Pair<String?, String> {
+        if (raw.isBlank()) return null to "HTTP $httpCode"
+        return try {
+            val obj = JSONObject(raw)
+            val code = obj.optString("error").takeIf { it.isNotBlank() }
+            val msg = obj.optString("message").takeIf { it.isNotBlank() }
+                ?: code
+                ?: "HTTP $httpCode"
+            code to msg
+        } catch (_: JSONException) {
+            null to "HTTP $httpCode"
+        }
     }
 }
 

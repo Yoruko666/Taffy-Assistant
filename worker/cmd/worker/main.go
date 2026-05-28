@@ -1,20 +1,16 @@
 // Command worker 是 Taffy 系统的大模型编排进程。
 //
 // 职责：
-//   - 接受 Server 通过 WS 推送的语音流（/v1/orchestrate）
-//   - 调用本地 ASR（FunASR）做流式识别
-//   - asr_final 触发云端 LLM 调用
-//   - 未来扩展：TTS 合成、设备指令解析、并行设备控制
-//
-// Worker 与 Server 之间用 WS 长连接复用一次会话，协议与"家具端 ↔ Server"完全相同。
+//   - 接收 Server 通过 WS 推送的语音流（/v1/orchestrate）
+//   - 调用本地 ASR 做流式识别
+//   - asr_final 触发云端 LLM 调用（OpenAI Function Calling）
+//   - LLM tool_calls 转发给 server 执行设备控制，结果回填二轮 LLM
+//   - 异步合成 TTS 并下发 tts_audio
 //
 // 启动：
 //
-//	# 默认监听 :8090，读取同目录 config.yaml
-//	go run ./cmd/worker
-//
-//	# 自定义
-//	$env:WORKER_PORT="8090"; $env:CONFIG_PATH="config.yaml"; go run ./cmd/worker
+//	go run ./cmd/worker                                # 默认 :8090
+//	$env:WORKER_PORT="8090"; $env:CONFIG_PATH="config.yaml"  # 可覆盖
 package main
 
 import (
@@ -27,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	"taffy.local/pkg/httpx"
+
 	"taffy-worker/internal/handler"
 )
 
@@ -34,8 +32,8 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	port := getenv("WORKER_PORT", "8090")
-	configPath := getenv("CONFIG_PATH", "config.yaml")
+	port := httpx.Getenv("WORKER_PORT", "8090")
+	configPath := httpx.Getenv("CONFIG_PATH", "config.yaml")
 
 	cfg, err := handler.LoadConfig(configPath)
 	if err != nil {
@@ -57,7 +55,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           withAccessLog(mux),
+		Handler:           httpx.AccessLog(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -80,25 +78,4 @@ func main() {
 		slog.Error("shutdown error", "err", err)
 	}
 	slog.Info("bye")
-}
-
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-// withAccessLog 给所有 HTTP 请求打一行访问日志（WebSocket 升级前也会经过这里）。
-func withAccessLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t0 := time.Now()
-		next.ServeHTTP(w, r)
-		slog.Info("http",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"remote", r.RemoteAddr,
-			"dur_ms", time.Since(t0).Milliseconds(),
-		)
-	})
 }

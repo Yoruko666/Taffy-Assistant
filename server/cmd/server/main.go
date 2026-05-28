@@ -1,24 +1,20 @@
-// Command server 是 Taffy 系统的 Go 中枢服务：
-//   - 接收家具端 / 客户端的接入（WS / REST）
-//   - 把家具端的语音 WS 会话整段转发给 Worker
-//   - 用户/设备 CRUD、对话历史落库、MQTT 设备控制
+// Command server 是 Taffy 系统的中枢服务：
+//   - 接收家具端 / 客户端的 WS / REST 请求
+//   - 把家具端的语音 WS 会话转发给 Worker
+//   - 用户 / 设备 CRUD、对话历史落库、MQTT 设备控制
 //
-// 不直接接 ASR / LLM / TTS（已下沉到 worker/）。
+// 不直接接 ASR / LLM / TTS（这些下沉到 worker/）。
 //
 // 启动：
 //
-//	# 默认监听 :8080，读取同目录 config.yaml
-//	go run ./cmd/server
-//
-//	# 自定义端口 / 配置 / Worker 地址
-//	$env:PORT="8080"
-//	$env:CONFIG_PATH="config.yaml"
+//	go run ./cmd/server                                # 默认 :8080，读取 ./config.yaml
+//	$env:PORT="8080"; $env:CONFIG_PATH="config.yaml"   # 可覆盖
 //	$env:WORKER_WS_URL="ws://127.0.0.1:8090/v1/orchestrate"
-//	go run ./cmd/server
 package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -27,10 +23,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
+	"taffy.local/pkg/httpx"
+
 	"taffy-server/internal/config"
 	"taffy-server/internal/database"
 	"taffy-server/internal/handler"
 	"taffy-server/internal/middleware"
+	"taffy-server/internal/mqtt"
 	"taffy-server/internal/repository"
 	"taffy-server/internal/service"
 )
@@ -39,94 +40,22 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	port := getenv("PORT", "8080")
-	configPath := getenv("CONFIG_PATH", "config.yaml")
+	port := httpx.Getenv("PORT", "8080")
+	configPath := httpx.Getenv("CONFIG_PATH", "config.yaml")
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		slog.Warn("config load failed, falling back to env-only defaults", "path", configPath, "err", err)
 		cfg = config.DefaultConfig()
 	}
-	slog.Info("config ready", "worker_ws", cfg.Worker.WSURL)
+	slog.Info("config ready", "worker_ws", cfg.Worker.WSURL, "mqtt_broker", cfg.MQTT.Broker)
 
-	// MySQL
-	db, err := database.InitMySQL(&cfg.MySQL)
-	if err != nil {
-		slog.Warn("mysql init failed, running without database", "err", err)
-	} else {
-		defer db.Close()
-	}
-
-	// Redis
-	rdb, err := database.InitRedis(&cfg.Redis)
-	if err != nil {
-		slog.Warn("redis init failed, running without cache", "err", err)
-	} else {
-		defer rdb.Close()
-	}
-
-	// 依赖装配
-	jwtMW := middleware.NewJWTMiddleware(&cfg.JWT, rdb)
-
-	var userSvc *service.UserService
-	var deviceSvc *service.DeviceService
-	if db != nil {
-		userRepo := repository.NewUserRepo(db)
-		deviceRepo := repository.NewDeviceRepo(db)
-		stateRepo := repository.NewDeviceStateRepo(db)
-
-		userSvc = service.NewUserService(userRepo)
-		deviceSvc = service.NewDeviceService(deviceRepo, stateRepo)
-	}
-
-	authHandler := handler.NewAuthHandler(userSvc, jwtMW, cfg)
-	deviceHandler := handler.NewDeviceHandler(deviceSvc)
-	voiceHandler := handler.NewVoiceHandler(cfg, deviceSvc)
-
-	// 路由注册
-	mux := http.NewServeMux()
-
-	// 健康检查
-	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		handler.HealthWithDB(w, r, cfg, db, rdb)
-	})
-
-	// 语音透传（家具端 WS）
-	mux.Handle("/v1/voice", voiceHandler)
-
-	// 认证（无需鉴权）
-	mux.HandleFunc("/api/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		authHandler.Register(w, r)
-	})
-	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		authHandler.Login(w, r)
-	})
-
-	// 设备 API（需鉴权）
-	if db != nil {
-		mux.HandleFunc("/api/v1/devices", jwtMW.RequireAuth(deviceHandler.ListDevices))
-		mux.HandleFunc("/api/v1/devices/states", jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
-		mux.HandleFunc("/api/v1/devices/state", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodPut {
-				jwtMW.RequireAuth(deviceHandler.UpdateDeviceState).ServeHTTP(w, r)
-			} else {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			}
-		})
-		mux.HandleFunc("/api/v1/devices/{deviceID}/state", jwtMW.RequireAuth(deviceHandler.GetDeviceState))
-	}
+	d := buildDeps(cfg)
+	defer d.Close()
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           withAccessLog(mux),
+		Handler:           httpx.AccessLog(buildRouter(cfg, d)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -151,23 +80,125 @@ func main() {
 	slog.Info("bye")
 }
 
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+// deps 装配后的所有外部依赖，方便统一 Close。
+type deps struct {
+	db        *sql.DB
+	rdb       *redis.Client
+	mqtt      *mqtt.Bridge
+	jwtMW     *middleware.JWTMiddleware
+	userSvc   *service.UserService
+	deviceSvc *service.DeviceService
+	convSvc   *service.ConversationService
 }
 
-// withAccessLog 给所有 HTTP 请求打一行访问日志（WebSocket 升级前也会经过这里）。
-func withAccessLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t0 := time.Now()
-		next.ServeHTTP(w, r)
-		slog.Info("http",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"remote", r.RemoteAddr,
-			"dur_ms", time.Since(t0).Milliseconds(),
-		)
+func (d *deps) Close() {
+	if d.db != nil {
+		_ = d.db.Close()
+	}
+	if d.rdb != nil {
+		_ = d.rdb.Close()
+	}
+	if d.mqtt != nil {
+		d.mqtt.Close()
+	}
+}
+
+func buildDeps(cfg *config.AppConfig) *deps {
+	d := &deps{}
+
+	if db, err := database.InitMySQL(&cfg.MySQL); err != nil {
+		slog.Warn("mysql init failed, running without database", "err", err)
+	} else {
+		d.db = db
+	}
+
+	if rdb, err := database.InitRedis(&cfg.Redis); err != nil {
+		slog.Warn("redis init failed, running without cache", "err", err)
+	} else {
+		d.rdb = rdb
+	}
+
+	// JWT 中间件总是装配；rdb 为 nil 时黑名单功能自动降级。
+	d.jwtMW = middleware.NewJWTMiddleware(&cfg.JWT, d.rdb)
+
+	if d.db != nil {
+		userRepo := repository.NewUserRepo(d.db)
+		deviceRepo := repository.NewDeviceRepo(d.db)
+		stateRepo := repository.NewDeviceStateRepo(d.db)
+		convRepo := repository.NewConversationRepo(d.db)
+		msgRepo := repository.NewMessageRepo(d.db)
+		cmdRepo := repository.NewCommandRepo(d.db)
+
+		d.userSvc = service.NewUserService(userRepo)
+		d.deviceSvc = service.NewDeviceService(deviceRepo, stateRepo)
+		d.convSvc = service.NewConversationService(convRepo, msgRepo, cmdRepo)
+	}
+
+	if cfg.MQTT.Broker != "" && d.deviceSvc != nil {
+		bridge, err := mqtt.NewBridge(&cfg.MQTT, mqtt.Handlers{
+			OnStatus:    service.NewMQTTStatusHandler(d.deviceSvc),
+			OnResult:    service.NewMQTTResultHandler(d.convSvc),
+			OnHeartbeat: service.NewMQTTHeartbeatHandler(d.deviceSvc),
+		})
+		if err != nil {
+			slog.Warn("mqtt init failed, running without device bridge", "err", err)
+		} else if bridge != nil {
+			d.mqtt = bridge
+			d.deviceSvc.AttachMQTT(mqttPublisherAdapter{bridge: bridge})
+			slog.Info("mqtt bridge ready", "broker", cfg.MQTT.Broker)
+		}
+	}
+
+	return d
+}
+
+// mqttPublisherAdapter 把 mqtt.Bridge 适配为 service.MQTTPublisher，切断反向依赖。
+type mqttPublisherAdapter struct{ bridge *mqtt.Bridge }
+
+func (a mqttPublisherAdapter) PublishCommand(ctx context.Context, deviceID string, p service.MQTTCommandPayload) error {
+	return a.bridge.PublishGenericCommand(ctx, deviceID, p.ToolID, p.Action, p.Params)
+}
+
+func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
+	mux := http.NewServeMux()
+
+	authHandler := handler.NewAuthHandler(d.userSvc, d.jwtMW, cfg)
+	deviceHandler := handler.NewDeviceHandler(d.deviceSvc)
+	voiceHandler := handler.NewVoiceHandler(cfg, d.deviceSvc, d.convSvc)
+
+	var mqttProbe func() string
+	if d.mqtt != nil {
+		mqttProbe = d.mqtt.Status
+	}
+	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		handler.HealthWithDB(w, r, cfg, d.db, d.rdb, mqttProbe)
 	})
+
+	mux.Handle("/v1/voice", voiceHandler)
+
+	mux.HandleFunc("/api/v1/auth/register", postOnly(authHandler.Register))
+	mux.HandleFunc("/api/v1/auth/login", postOnly(authHandler.Login))
+
+	if d.db != nil {
+		mux.HandleFunc("/api/v1/devices", d.jwtMW.RequireAuth(deviceHandler.ListDevices))
+		mux.HandleFunc("/api/v1/devices/states", d.jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
+		mux.HandleFunc("/api/v1/devices/state", methodOnly(http.MethodPut, d.jwtMW.RequireAuth(deviceHandler.UpdateDeviceState)))
+		mux.HandleFunc("/api/v1/devices/{deviceID}/state", d.jwtMW.RequireAuth(deviceHandler.GetDeviceState))
+	}
+
+	return mux
+}
+
+func postOnly(h http.HandlerFunc) http.HandlerFunc {
+	return methodOnly(http.MethodPost, h)
+}
+
+func methodOnly(method string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h(w, r)
+	}
 }

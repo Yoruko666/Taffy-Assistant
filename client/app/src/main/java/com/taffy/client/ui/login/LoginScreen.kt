@@ -30,11 +30,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.taffy.client.TaffyApplication
 import androidx.compose.ui.platform.LocalContext
 
-/**
- * 登录 / 注册页。
- *
- * 同一页面通过 [LoginUiState.Mode] 在两种模式间切换，避免单独建一个注册页带来的重复代码。
- */
+/** 登录 / 注册页。同一页面通过 [LoginUiState.Mode] 切换模式。*/
 @Composable
 fun LoginScreen(onLoggedIn: () -> Unit) {
     val context = LocalContext.current
@@ -111,7 +107,6 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
                 )
             }
 
-            // 错误提示
             if (state.errorMessage != null) {
                 Spacer(Modifier.height(12.dp))
                 Text(

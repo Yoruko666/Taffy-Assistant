@@ -36,12 +36,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.taffy.client.websocket.ServerWebSocket
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+/** 历史消息最大条数，超出后从头部裁剪。*/
+private const val MAX_MESSAGES = 500
 
 /**
- * 语音对话页：订阅 server WS 推送的事件流（asr_partial / asr_final /
- * llm_result / device_command_result / tts_audio …），用于联调期肉眼验证全链路。
- *
- * 后续会加入录音按钮 + 文本输入框走 /v1/voice 上行。
+ * 语音对话页：订阅 server WS 事件流（asr_partial / asr_final / llm_result /
+ * device_command_result / tts_audio …），用于联调期肉眼验证全链路。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,6 +57,9 @@ fun VoiceChatScreen(onBack: () -> Unit) {
         ServerWebSocket(
             onMessage = { json ->
                 messages.add(MessageItem(json, parseEventType(json)))
+                while (messages.size > MAX_MESSAGES) {
+                    messages.removeAt(0)
+                }
                 scope.launch { listState.animateScrollToItem(messages.size - 1) }
             },
             onConnectionChanged = { state -> connectionState = state },
@@ -177,11 +182,8 @@ private fun ConnectionBar(state: ServerWebSocket.ConnectionState) {
 
 private data class MessageItem(val rawJson: String, val type: String)
 
-private fun parseEventType(json: String): String {
-    val key = "\"type\":\""
-    val idx = json.indexOf(key)
-    if (idx < 0) return "unknown"
-    val start = idx + key.length
-    val end = json.indexOf('"', start)
-    return if (end < 0) "unknown" else json.substring(start, end)
-}
+/** 解析事件 type；用 JSON 解析避免遇到嵌套字符串时误识别。*/
+private fun parseEventType(json: String): String = runCatching {
+    JSONObject(json).optString("type", "unknown")
+}.getOrDefault("unknown")
+

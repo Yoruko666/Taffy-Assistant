@@ -11,16 +11,19 @@ import (
 	"taffy-server/internal/model"
 )
 
-// DeviceCommandResult 设备指令的执行结果，由 voice handler 透传回 worker。
-// Message 是给 LLM 的中文反馈（成功或失败原因），用于二轮对话。
+// DeviceCommandResult 设备指令的执行结果。
+// Message 是给 LLM 的中文反馈，用于二轮对话生成自然语言回复。
 type DeviceCommandResult struct {
 	Success bool
 	Message string
 }
 
-// ExecuteControlDevice 执行 Worker 下发的 control_device 指令：
-// 解析参数 → 校验设备 → 计算新状态 → UpdateDeviceState → 拼装中文反馈。
-// 任何错误都通过 [DeviceCommandResult] 返回，不会向上 panic。
+// ExecuteControlDevice 执行 control_device 指令：
+// 解析参数 → 校验设备 → 计算新状态 → UpdateDeviceState → MQTT 下发 → 拼装中文反馈。
+//
+// 任何错误都通过 DeviceCommandResult 返回，不会向上 panic。
+// 若已通过 AttachMQTT 注入 publisher，会在 DB 更新成功后向 taffy/device/{id}/cmd
+// 发布控制 JSON，MQTT 失败不影响主返回。
 func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMessage) DeviceCommandResult {
 	var p protocol.ControlDeviceParams
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -51,7 +54,34 @@ func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMe
 		return DeviceCommandResult{Success: false, Message: "状态更新失败: " + err.Error()}
 	}
 
+	s.publishCommandBestEffort(cctx, p)
+
 	return DeviceCommandResult{Success: true, Message: formatSuccessMessage(device, p.Action, state)}
+}
+
+// publishCommandBestEffort 把控制指令通过 MQTT 转发到物理设备。
+// 仅在 publisher 已注入时执行，错误被吞掉以免影响 LLM 二轮调用。
+func (s *DeviceService) publishCommandBestEffort(ctx context.Context, p protocol.ControlDeviceParams) {
+	if s.mqttPub == nil {
+		return
+	}
+	params := map[string]any{}
+	if p.Brightness != nil {
+		params["brightness"] = *p.Brightness
+	}
+	if p.Temperature != nil {
+		params["temperature"] = *p.Temperature
+	}
+	if p.Mode != "" {
+		params["mode"] = p.Mode
+	}
+	if p.Position != nil {
+		params["position"] = *p.Position
+	}
+	_ = s.mqttPub.PublishCommand(ctx, p.DeviceID, MQTTCommandPayload{
+		Action: p.Action,
+		Params: params,
+	})
 }
 
 // ExecuteActivateScene 执行场景激活（暂未实现）。
@@ -60,33 +90,33 @@ func (s *DeviceService) ExecuteActivateScene(_ context.Context, _ json.RawMessag
 }
 
 // applyAction 把 action 反映到 state 上。
-// 返回非空字符串表示参数校验失败；返回 "" 表示成功。
+// 返回非空字符串表示参数校验失败，"" 表示成功。
 func applyAction(state *model.DeviceState, p protocol.ControlDeviceParams) string {
 	switch p.Action {
-	case "turn_on":
+	case protocol.ActionTurnOn:
 		state.Power = true
-	case "turn_off":
+	case protocol.ActionTurnOff:
 		state.Power = false
-	case "set_brightness":
+	case protocol.ActionSetBrightness:
 		if p.Brightness == nil {
 			return "缺少 brightness 参数"
 		}
 		state.Power = true
 		state.Brightness = p.Brightness
-	case "set_temperature":
+	case protocol.ActionSetTemperature:
 		if p.Temperature == nil {
 			return "缺少 temperature 参数"
 		}
 		state.Power = true
 		state.Temperature = p.Temperature
-	case "set_mode":
+	case protocol.ActionSetMode:
 		if p.Mode == "" {
 			return "缺少 mode 参数"
 		}
 		state.Power = true
 		m := model.AirconMode(p.Mode)
 		state.Mode = &m
-	case "set_position":
+	case protocol.ActionSetPosition:
 		if p.Position == nil {
 			return "缺少 position 参数"
 		}
@@ -107,33 +137,29 @@ func formatSuccessMessage(device *model.Device, action string, state *model.Devi
 	name := device.Name
 
 	switch action {
-	case "turn_on":
+	case protocol.ActionTurnOn:
 		return "已打开" + room + name
-	case "turn_off":
+	case protocol.ActionTurnOff:
 		return "已关闭" + room + name
-	case "set_brightness":
+	case protocol.ActionSetBrightness:
 		if state.Brightness != nil {
 			return room + name + "亮度已设为" + strconv.Itoa(*state.Brightness) + "%"
 		}
 		return room + name + "亮度已调整"
-	case "set_temperature":
+	case protocol.ActionSetTemperature:
 		if state.Temperature != nil {
 			return room + name + "温度已设为" + strconv.Itoa(*state.Temperature) + "度"
 		}
 		return room + name + "温度已调整"
-	case "set_mode":
-		modeNames := map[string]string{
-			"cool": "制冷", "heat": "制热", "auto": "自动",
-			"fan": "送风", "dry": "除湿",
-		}
+	case protocol.ActionSetMode:
 		modeText := "未知"
 		if state.Mode != nil {
-			if n, ok := modeNames[string(*state.Mode)]; ok {
+			if n, ok := protocol.AirconModeLabels()[string(*state.Mode)]; ok {
 				modeText = n
 			}
 		}
 		return room + name + "已切换为" + modeText + "模式"
-	case "set_position":
+	case protocol.ActionSetPosition:
 		if state.Position != nil {
 			return room + name + "开合度已设为" + strconv.Itoa(*state.Position) + "%"
 		}

@@ -23,11 +23,32 @@ var ErrInvalidDeviceToken = errors.New("invalid device token")
 type DeviceService struct {
 	deviceRepo *repository.DeviceRepo
 	stateRepo  *repository.DeviceStateRepo
+
+	// mqttPub 非 nil 时 ExecuteControlDevice 会向 taffy/device/{id}/cmd 下发指令。
+	mqttPub MQTTPublisher
+}
+
+// MQTTPublisher 把控制指令下发到物理 / 模拟设备的最小接口，由 mqtt.Bridge 实现。
+type MQTTPublisher interface {
+	PublishCommand(ctx context.Context, deviceID string, payload MQTTCommandPayload) error
+}
+
+// MQTTCommandPayload 与 mqtt.CommandPayload 字段一致。
+// 单独放在 service 包是为了切断对 mqtt 包的反向依赖。
+type MQTTCommandPayload struct {
+	ToolID string         `json:"tool_id,omitempty"`
+	Action string         `json:"action"`
+	Params map[string]any `json:"params,omitempty"`
 }
 
 // NewDeviceService 创建 DeviceService。
 func NewDeviceService(deviceRepo *repository.DeviceRepo, stateRepo *repository.DeviceStateRepo) *DeviceService {
 	return &DeviceService{deviceRepo: deviceRepo, stateRepo: stateRepo}
+}
+
+// AttachMQTT 注入 mqtt publisher，让 ExecuteControlDevice 同步下发到物理设备。
+func (s *DeviceService) AttachMQTT(p MQTTPublisher) {
+	s.mqttPub = p
 }
 
 // CreateDevice 创建设备并初始化其状态。
@@ -101,13 +122,9 @@ func (s *DeviceService) DeleteDevice(ctx context.Context, deviceID string) error
 	return s.deviceRepo.Delete(ctx, deviceID)
 }
 
-// ValidateDeviceCredential 校验家具端 WS 上行的 (device_id, token) 凭据。
-// 通过条件（全部满足）：
-//   - device_id 在 devices 表存在
-//   - 存储的 token 非空且与传入的 token 完全相等
-//   - 设备状态不是 'unregistered'
-//
-// 任意一项不满足返回 [ErrInvalidDeviceToken]；DB 查询错误原样返回。
+// ValidateDeviceCredential 校验家具端 (device_id, token) 凭据。
+// 设备必须存在、token 完全匹配、status != unregistered。
+// 任一不满足返回 ErrInvalidDeviceToken；DB 查询错误原样返回。
 func (s *DeviceService) ValidateDeviceCredential(ctx context.Context, deviceID, token string) (*model.Device, error) {
 	if deviceID == "" || token == "" {
 		return nil, ErrInvalidDeviceToken

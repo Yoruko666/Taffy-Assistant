@@ -32,3 +32,19 @@ jwt:
   secret: "change-me-in-production"
   access_ttl: "2h"   # Access Token 有效期
   refresh_ttl: "168h" # Refresh Token 有效期（7 天）
+
+# MQTT bridge（可选）
+# broker 为空 = 禁用 MQTT 桥接；server 仍可通过 DB 维护设备状态，
+# 但不会真的把控制指令推给物理 / 模拟设备。
+# 与 furniture/mock_devices.py 的 topic 契约：
+#   taffy/device/{id}/cmd       Server → Device   控制指令
+#   taffy/device/{id}/status    Device → Server   设备状态
+#   taffy/device/{id}/result    Device → Server   指令结果
+#   taffy/device/{id}/heartbeat Device → Server   心跳
+mqtt:
+  broker: ""                # 形如 "tcp://127.0.0.1:1883"，留空禁用
+  client_id: "taffy-server"
+  username: ""
+  password: ""
+  qos: 1
+

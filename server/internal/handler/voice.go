@@ -13,31 +13,32 @@ import (
 	"github.com/gorilla/websocket"
 
 	"taffy.local/pkg/protocol"
+	"taffy.local/pkg/wsutil"
 
 	"taffy-server/internal/config"
+	"taffy-server/internal/model"
 	"taffy-server/internal/service"
 )
 
-// VoiceHandler 实现家具端 ↔ Server WebSocket（/v1/voice）：
-//   - HTTP 入口 + 设备鉴权（device_id / token，可由 TAFFY_VOICE_AUTH=off 关闭）
-//   - 双向透传家具端 ↔ Worker 的 WS 帧
+// VoiceHandler 实现家具端 ↔ Server 的 /v1/voice WebSocket：
+//   - 设备 device_id / token 鉴权（可由 TAFFY_VOICE_AUTH=off 关闭）
+//   - 与 Worker 之间双向透传
 //   - 拦截 Worker 的 device_command，委托 service 层执行后回传结果
-//   - 会话建立时同步推送设备上下文给 Worker
+//   - 会话建立时推送设备上下文给 Worker
+//   - 把 asr_final / llm_result / device_command 异步落库
 type VoiceHandler struct {
 	workerWSURL string
 	deviceSvc   *service.DeviceService
+	convSvc     *service.ConversationService
 	upgrader    websocket.Upgrader
 	dialer      *websocket.Dialer
 
-	// authEnabled 控制是否对家具端做 device_id/token 校验。
-	//   - 默认 true：必须凭据通过才放行；
-	//   - 通过环境变量 TAFFY_VOICE_AUTH=off / 0 / false 显式关闭，仅供本地开发期；
-	//   - deviceSvc 为 nil（DB 未配置）时鉴权也会自动跳过，启动时打 WARN。
+	// authEnabled=false 时跳过 device_id/token 校验，仅本地开发用。
 	authEnabled bool
 }
 
-// NewVoiceHandler 构造 voice handler，内部拨号到 worker。
-func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService) *VoiceHandler {
+// NewVoiceHandler 构造 voice handler。convSvc 为 nil 时跳过对话历史落库。
+func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService, convSvc *service.ConversationService) *VoiceHandler {
 	workerURL := ""
 	if cfg != nil {
 		workerURL = cfg.Worker.WSURL
@@ -52,17 +53,10 @@ func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService) *V
 	return &VoiceHandler{
 		workerWSURL: workerURL,
 		deviceSvc:   deviceSvc,
+		convSvc:     convSvc,
 		authEnabled: authEnabled,
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  64 * 1024,
-			WriteBufferSize: 64 * 1024,
-			CheckOrigin:     func(*http.Request) bool { return true },
-		},
-		dialer: &websocket.Dialer{
-			HandshakeTimeout: 10 * time.Second,
-			ReadBufferSize:   64 * 1024,
-			WriteBufferSize:  64 * 1024,
-		},
+		upgrader:    wsutil.DefaultUpgrader(),
+		dialer:      wsutil.DefaultDialer(),
 	}
 }
 
@@ -74,8 +68,9 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log = log.With("token_len", len(token))
 	}
 
-	// 必须在 WS Upgrade 之前完成鉴权，否则客户端拿不到 401 状态码。
-	if err := h.authenticateDevice(r.Context(), deviceID, token, log); err != nil {
+	// 鉴权必须在 WS Upgrade 之前完成，否则客户端拿不到 401 状态码。
+	device, err := h.authenticateDevice(r.Context(), deviceID, token, log)
+	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -95,14 +90,14 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.workerWSURL == "" {
 		log.Error("worker ws url not configured")
-		_ = writeJSON(clientConn, map[string]any{"type": "error", "message": "worker not configured"})
+		_ = wsutil.WriteJSON(clientConn, map[string]any{"type": "error", "message": "worker not configured"})
 		return
 	}
 
 	workerURL, err := buildWorkerURL(h.workerWSURL, deviceID)
 	if err != nil {
 		log.Error("build worker url failed", "err", err)
-		_ = writeJSON(clientConn, map[string]any{"type": "error", "message": "worker url invalid"})
+		_ = wsutil.WriteJSON(clientConn, map[string]any{"type": "error", "message": "worker url invalid"})
 		return
 	}
 
@@ -111,61 +106,74 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	workerConn, _, err := h.dialer.DialContext(dialCtx, workerURL, nil)
 	if err != nil {
 		log.Error("dial worker failed", "worker", workerURL, "err", err)
-		_ = writeJSON(clientConn, map[string]any{"type": "error", "message": "worker backend unreachable"})
+		_ = wsutil.WriteJSON(clientConn, map[string]any{"type": "error", "message": "worker backend unreachable"})
 		return
 	}
 	defer workerConn.Close()
 	log.Info("worker connected", "worker", workerURL)
 
-	// 同步推送，确保 LLM 第一轮调用时已能看到设备列表。
+	// 同步推送设备上下文，确保 LLM 第一轮调用时已能看到设备列表。
 	if h.deviceSvc != nil && deviceID != "" {
 		h.pushDeviceContext(workerConn, deviceID, log)
 	}
 
-	h.pump(clientConn, workerConn, log)
+	vs := newVoiceSession(h.convSvc, log)
+	if device != nil {
+		startCtx, startCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		vs.start(startCtx, device.OwnerID, deviceID)
+		startCancel()
+	}
+	defer vs.end()
+
+	h.pump(clientConn, workerConn, vs, log)
 	log.Info("session done")
 }
 
-// authenticateDevice 校验家具端 WS 上行的 (device_id, token) 凭据。
+// authenticateDevice 校验家具端 (device_id, token) 凭据。
 //
-// 决策矩阵：
-//
-//	authEnabled=false → 跳过；
-//	deviceSvc==nil    → 跳过（DB 不可用），打 WARN；
-//	凭据有效          → 通过；
+//	authEnabled=false → 跳过；尝试解析设备用于落库挂 user_id；
+//	deviceSvc==nil    → 跳过（DB 不可用）；
+//	凭据有效          → 返回 *model.Device；
 //	凭据无效          → ErrInvalidDeviceToken；
-//	DB 异常           → 原样返回（fail-close）。
-func (h *VoiceHandler) authenticateDevice(parentCtx context.Context, deviceID, token string, log *slog.Logger) error {
+//	DB 异常           → 原样返回。
+func (h *VoiceHandler) authenticateDevice(parentCtx context.Context, deviceID, token string, log *slog.Logger) (*model.Device, error) {
 	if !h.authEnabled {
 		log.Debug("voice auth skipped (disabled by env)")
-		return nil
+		if h.deviceSvc != nil && deviceID != "" {
+			ctx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
+			defer cancel()
+			if d, err := h.deviceSvc.GetDevice(ctx, deviceID); err == nil {
+				return d, nil
+			}
+		}
+		return nil, nil
 	}
 	if h.deviceSvc == nil {
 		log.Warn("voice auth skipped (no DeviceService); set up MySQL or fix configuration before production")
-		return nil
+		return nil, nil
 	}
 	if deviceID == "" || token == "" {
 		log.Warn("voice auth rejected: missing device_id or token")
-		return service.ErrInvalidDeviceToken
+		return nil, service.ErrInvalidDeviceToken
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
 	defer cancel()
 
-	if _, err := h.deviceSvc.ValidateDeviceCredential(ctx, deviceID, token); err != nil {
+	device, err := h.deviceSvc.ValidateDeviceCredential(ctx, deviceID, token)
+	if err != nil {
 		if errors.Is(err, service.ErrInvalidDeviceToken) {
 			log.Warn("voice auth rejected: invalid credential")
 		} else {
 			log.Error("voice auth db error", "err", err)
 		}
-		return err
+		return nil, err
 	}
 	log.Info("voice auth ok")
-	return nil
+	return device, nil
 }
 
 // pushDeviceContext 把当前用户的设备列表 + 状态打包推给 Worker。
-// 业务字段构造在 service.BuildDeviceContext。
 func (h *VoiceHandler) pushDeviceContext(workerConn *websocket.Conn, deviceID string, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -179,7 +187,7 @@ func (h *VoiceHandler) pushDeviceContext(workerConn *websocket.Conn, deviceID st
 		devices = []service.DeviceContextItem{}
 	}
 
-	if err := writeJSON(workerConn, protocol.DeviceInfoEvent{
+	if err := wsutil.WriteJSON(workerConn, protocol.DeviceInfoEvent{
 		Type:    protocol.EventTypeDeviceInfo,
 		Devices: devices,
 	}); err != nil {
@@ -190,13 +198,14 @@ func (h *VoiceHandler) pushDeviceContext(workerConn *websocket.Conn, deviceID st
 }
 
 // pump 双向透传家具端 ↔ Worker，直到任一侧关闭。
-// worker → client 方向会拦截 device_command 交给 service 处理。
-func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Logger) {
+// worker → client 方向会拦截 device_command 交给 service 处理，
+// 并把 asr_final / llm_result 异步写入对话历史表。
+func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, vs *voiceSession, log *slog.Logger) {
 	stop := make(chan struct{})
 	var once sync.Once
 	closeStop := func() { once.Do(func() { close(stop) }) }
 
-	// 客户端写入需要并发安全：正常转发 + device_command_result 都会写。
+	// 正常转发 + device_command_result 都会写客户端，加锁保证并发安全。
 	var clientWriteMu sync.Mutex
 	writeClient := func(mt int, data []byte) error {
 		clientWriteMu.Lock()
@@ -214,7 +223,7 @@ func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Lo
 		for {
 			mt, data, err := clientConn.ReadMessage()
 			if err != nil {
-				if isNormalClose(err) {
+				if wsutil.IsNormalClose(err) {
 					log.Info("client closed")
 				} else {
 					log.Warn("client read err", "err", err)
@@ -240,7 +249,7 @@ func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Lo
 		for {
 			mt, data, err := workerConn.ReadMessage()
 			if err != nil {
-				if isNormalClose(err) {
+				if wsutil.IsNormalClose(err) {
 					log.Info("worker closed")
 				} else {
 					log.Warn("worker read err", "err", err)
@@ -249,7 +258,7 @@ func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Lo
 			}
 
 			if mt == websocket.TextMessage && isDeviceCommand(data) {
-				go h.handleDeviceCommand(workerConn, data, log)
+				go h.handleDeviceCommand(workerConn, data, vs, log)
 				continue
 			}
 
@@ -260,6 +269,7 @@ func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Lo
 
 			if mt == websocket.TextMessage {
 				logSessionEvent(log, data)
+				vs.recordWorkerEvent(data)
 			}
 		}
 	}()
@@ -271,8 +281,8 @@ func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Lo
 }
 
 // handleDeviceCommand 解析 worker 下发的 device_command，
-// 委托给 [service.DeviceService] 执行后把结果回传给 worker。
-func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []byte, log *slog.Logger) {
+// 委托给 service.DeviceService 执行后把结果回传给 worker，同时落库。
+func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []byte, vs *voiceSession, log *slog.Logger) {
 	var cmd protocol.DeviceCommandEvent
 	if err := json.Unmarshal(data, &cmd); err != nil {
 		log.Warn("handle device command: parse failed", "err", err)
@@ -282,6 +292,9 @@ func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []by
 
 	log.Info("device command received",
 		"function", cmd.Function, "tool_id", cmd.ToolID, "params", string(cmd.Params))
+
+	// 先插入 commands(result=pending)，便于异步路径回填结果。
+	vs.recordCommand(cmd)
 
 	var result service.DeviceCommandResult
 	switch cmd.Function {
@@ -304,13 +317,12 @@ func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []by
 	log.Info("device command result",
 		"tool_id", cmd.ToolID, "success", result.Success, "message", result.Message)
 	h.sendCommandResult(workerConn, cmd.ToolID, result.Success, result.Message, log)
-
-	// TODO: 通过 MQTT 或专用 WS 频道把控制指令同步下发给物理设备
+	vs.markCommandResult(cmd.ToolID, result.Success)
 }
 
 // sendCommandResult 向 Worker 回传指令执行结果。
 func (h *VoiceHandler) sendCommandResult(workerConn *websocket.Conn, toolID string, success bool, message string, log *slog.Logger) {
-	if err := writeJSON(workerConn, protocol.DeviceCommandResultEvent{
+	if err := wsutil.WriteJSON(workerConn, protocol.DeviceCommandResultEvent{
 		Type:    protocol.EventTypeDeviceCommandResult,
 		ToolID:  toolID,
 		Success: success,

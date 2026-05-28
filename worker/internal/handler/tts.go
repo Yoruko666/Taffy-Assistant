@@ -8,41 +8,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
-// TTS 合成超时（秒）。Piper huayan-medium 一句中文大约 0.5~1.5s，
-// 留 15s 上限足够覆盖长句。
+// TTS 合成超时（秒）。Piper huayan-medium 单句 0.5~1.5s，15s 上限足够覆盖长句。
 const ttsHTTPTimeout = 15 * time.Second
 
-// synthesizeAndSendTTS 调用本地 TTS 服务合成 wav，并通过 WS 下发 tts_audio 事件。
+// maxWavBytes 防御异常 TTS 流。30s 22.05kHz 16bit 单声道 ≈ 1.3MB。
+const maxWavBytes = 8 * 1024 * 1024
+
+// ttsHTTPClient 是 worker 内 TTS 调用共用的 HTTP 客户端。
+var ttsHTTPClient = &http.Client{}
+
+// synthesizeAndSendTTS 调用本地 TTS 合成 wav，并通过 WS 下发 tts_audio 事件。
 //
-// 该函数应在 llm_result 已经发送之后调用，**不阻塞**主回复链路：
-//   - 即便 TTS 失败，用户也已经看到/收到了文本回复；
-//   - 失败仅打 warn 日志，不发 error 事件给端侧（避免端侧把 TTS 异常当业务异常处理）。
+// 应在 llm_result 已发送之后调用，不阻塞主回复链路：
+// 失败仅 warn 日志，不发 error 事件（避免端侧把 TTS 异常当业务异常处理）。
 //
-// 协议（家具端 receiver 已支持）：
-//
-//	{"type":"tts_audio","format":"wav","data":"<base64 wav>"}
-func (h *OrchestrateHandler) synthesizeAndSendTTS(
-	conn *websocket.Conn,
-	text string,
-	writeMu *sync.Mutex,
-	log *slog.Logger,
-) {
+// 协议：{"type":"tts_audio","format":"wav","data":"<base64 wav>"}
+func (h *OrchestrateHandler) synthesizeAndSendTTS(s *Session, text string) {
 	if h.cfg == nil || h.cfg.TTS.URL == "" {
-		// TTS 未配置，跳过（保持纯文本链路可用）
 		return
 	}
 	if text == "" {
 		return
 	}
 
+	log := s.Log()
 	t0 := time.Now()
 	wavBytes, err := callTTS(h.cfg.TTS.URL, text)
 	cost := time.Since(t0).Milliseconds()
@@ -53,20 +46,17 @@ func (h *OrchestrateHandler) synthesizeAndSendTTS(
 	log.Info("tts synthesize ok", "cost_ms", cost, "text_len", len(text), "wav_bytes", len(wavBytes))
 
 	encoded := base64.StdEncoding.EncodeToString(wavBytes)
-	writeMu.Lock()
-	werr := writeJSON(conn, map[string]any{
+	if err := s.WriteJSON(map[string]any{
 		"type":   "tts_audio",
 		"format": "wav",
 		"data":   encoded,
-	})
-	writeMu.Unlock()
-	if werr != nil {
-		log.Warn("tts send failed", "err", werr)
+	}); err != nil {
+		log.Warn("tts send failed", "err", err)
 	}
 }
 
 // callTTS 向本地 TTS 服务发起合成请求，返回 wav 字节流。
-func callTTS(url string, text string) ([]byte, error) {
+func callTTS(url, text string) ([]byte, error) {
 	body, err := json.Marshal(map[string]any{
 		"text":   text,
 		"format": "wav",
@@ -85,21 +75,18 @@ func callTTS(url string, text string) ([]byte, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "audio/wav")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ttsHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("tts http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 失败时 TTS 服务返回的是 JSON {"error":"...","message":"..."}
+		// 失败时 TTS 服务返回 JSON {"error":"...","message":"..."}
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, errors.New("tts status " + resp.Status + ": " + string(errBody))
 	}
 
-	// 防御：限制最大读取，避免 TTS 异常返回巨大流。
-	// 30s 22.05kHz 16bit 单声道 ≈ 1.3MB，给 8MB 上限足够。
-	const maxWavBytes = 8 * 1024 * 1024
 	wav, err := io.ReadAll(io.LimitReader(resp.Body, maxWavBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read tts body: %w", err)
@@ -108,7 +95,7 @@ func callTTS(url string, text string) ([]byte, error) {
 		return nil, fmt.Errorf("tts response too large: > %d bytes", maxWavBytes)
 	}
 	if len(wav) < 44 {
-		// 一个合法 wav 至少要有 44 字节 RIFF header
+		// 合法 wav 至少 44 字节 RIFF header
 		return nil, errors.New("tts response too short, not a valid wav")
 	}
 	return wav, nil

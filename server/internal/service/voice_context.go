@@ -9,12 +9,11 @@ import (
 	"taffy-server/internal/model"
 )
 
-// DeviceContextItem 单台设备的对外快照，推给 Worker 让 LLM 在 system prompt 里"看见"用户的家具。
-// 字段定义在共享的 [protocol.DeviceContext]，本地仅别名。
+// DeviceContextItem 推给 Worker 的单台设备快照，本地别名 protocol.DeviceContext。
 type DeviceContextItem = protocol.DeviceContext
 
-// BuildDeviceContext 根据"当前在线的家具 device_id"反查其所属用户的所有设备 + 状态，
-// 组装为 [DeviceContextItem] 列表，用于会话建立时推送给 Worker。
+// BuildDeviceContext 根据家具 device_id 反查所属用户的所有设备 + 状态，
+// 用于会话建立时推送给 Worker，注入 LLM system prompt。
 func (s *DeviceService) BuildDeviceContext(ctx context.Context, deviceID string) ([]DeviceContextItem, error) {
 	device, err := s.GetDevice(ctx, deviceID)
 	if err != nil {

@@ -1,17 +1,15 @@
 package handler
 
 import (
-	"strconv"
-
 	"taffy.local/pkg/protocol"
 )
 
 // BuildTools 构造发送给 LLM 的 tools 参数（OpenAI Function Calling 格式）。
 //
 // control_device 的所有动作参数（brightness / temperature / mode / position）平铺在顶层，
-// 与 server 端 [protocol.ControlDeviceParams] 字段一一对应，请勿改成嵌套 params 子对象。
+// 与 protocol.ControlDeviceParams 字段一一对应，请勿改成嵌套 params 子对象。
 //
-// activate_scene 服务端尚未实现，暂不暴露给 LLM，避免模型误触发后回复"暂未实现"。
+// activate_scene 服务端尚未实现，暂不暴露给 LLM。
 func BuildTools() []map[string]any {
 	return []map[string]any{
 		{
@@ -29,7 +27,7 @@ func BuildTools() []map[string]any {
 						"action": map[string]any{
 							"type":        "string",
 							"description": "控制动作",
-							"enum":        []string{"turn_on", "turn_off", "set_brightness", "set_temperature", "set_mode", "set_position"},
+							"enum":        protocol.AllControlActions(),
 						},
 						"brightness": map[string]any{
 							"type":        "integer",
@@ -46,7 +44,7 @@ func BuildTools() []map[string]any {
 						"mode": map[string]any{
 							"type":        "string",
 							"description": "空调模式，仅 action=set_mode 时提供",
-							"enum":        []string{"cool", "heat", "auto", "fan", "dry"},
+							"enum":        protocol.AllAirconModes(),
 						},
 						"position": map[string]any{
 							"type":        "integer",
@@ -95,9 +93,7 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"` // JSON string
 }
 
-// 以下结构体作为 protocol 包的本地别名，保持 worker 内部命名习惯不变。
-// 字段定义在 [protocol]，请勿在此处再加字段。
-
+// 以下为 protocol 包的本地别名，保持 worker 内部命名一致。字段以 protocol 为准。
 type (
 	ControlDeviceParams      = protocol.ControlDeviceParams
 	ActivateSceneParams      = protocol.ActivateSceneParams
@@ -108,52 +104,3 @@ type (
 	DeviceInfoEvent          = protocol.DeviceInfoEvent
 )
 
-// BuildSystemPrompt 根据设备上下文动态构建 system prompt。
-func BuildSystemPrompt(basePrompt string, devices []DeviceContext, scenes []SceneContext) string {
-	prompt := basePrompt
-	if prompt == "" {
-		prompt = "你是「小菲」，一个智能家居语音助手。请用中文简短回答用户的问题。"
-	}
-
-	prompt += "\n\n## 当前用户的设备列表\n"
-	if len(devices) == 0 {
-		prompt += "（暂无设备）\n"
-	} else {
-		for _, d := range devices {
-			status := "关闭"
-			if d.Power {
-				status = "开启"
-			}
-			prompt += "- " + d.DeviceID + " | " + d.Room + " " + d.Name + " (" + d.Type + ") 状态:" + status
-			if d.Brightness != nil {
-				prompt += " 亮度:" + strconv.Itoa(*d.Brightness) + "%"
-			}
-			if d.Temperature != nil {
-				prompt += " 温度:" + strconv.Itoa(*d.Temperature) + "°C"
-			}
-			if d.Mode != "" {
-				prompt += " 模式:" + d.Mode
-			}
-			if d.Position != nil {
-				prompt += " 开合度:" + strconv.Itoa(*d.Position) + "%"
-			}
-			prompt += "\n"
-		}
-	}
-
-	if len(scenes) > 0 {
-		prompt += "\n## 用户预设场景\n"
-		for _, s := range scenes {
-			prompt += "- 场景ID:" + strconv.FormatInt(s.SceneID, 10) + " " + s.Name + "\n"
-		}
-	}
-
-	prompt += "\n## 重要规则\n"
-	prompt += "1. 当用户要求控制设备时，你必须调用 control_device 函数，不要在文本回复中描述操作。\n"
-	prompt += "2. device_id 必须从上面的设备列表中选择，不能自行编造。\n"
-	prompt += "3. 调用函数后，等待执行结果再回复用户。如果执行成功，简短确认；如果失败，告知用户。\n"
-	prompt += "4. 如果用户的意图不是控制设备，直接文字回复即可，不需要调用任何函数。\n"
-	prompt += "5. 回复要简洁自然，像一个语音助手在说话。\n"
-
-	return prompt
-}
