@@ -4,26 +4,17 @@ import (
 	"context"
 	"fmt"
 
+	"taffy.local/pkg/protocol"
+
 	"taffy-server/internal/model"
 )
 
 // DeviceContextItem 单台设备的对外快照，
 // 用于推送给 Worker 让 LLM 在 system prompt 里"看见"用户的家具。
 //
-// 与 model.DeviceState 区别：
-//   - 这里聚合了 Device 的元信息（名字、房间、类型）
-//   - 字段命名贴合 LLM 输入习惯（snake_case，omitempty）
-type DeviceContextItem struct {
-	DeviceID    string `json:"device_id"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Room        string `json:"room"`
-	Power       bool   `json:"power"`
-	Brightness  *int   `json:"brightness,omitempty"`
-	Temperature *int   `json:"temperature,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Position    *int   `json:"position,omitempty"`
-}
+// 是 [protocol.DeviceContext] 的本地别名——真实字段定义在共享 protocol 包中，
+// 改动字段必须同时关注 worker 侧。
+type DeviceContextItem = protocol.DeviceContext
 
 // BuildDeviceContext 根据"当前在线的家具端 device_id"反查它所属用户的全部设备 +
 // 状态，组装为 [DeviceContextItem]。

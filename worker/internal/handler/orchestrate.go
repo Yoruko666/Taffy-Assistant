@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"taffy.local/pkg/protocol"
 )
 
 // OrchestrateHandler 实现 Server ↔ Worker 之间的 WS 端点（/v1/orchestrate）。
@@ -170,7 +172,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 
 					// 拦截 device_info：保存设备上下文，不转发给 ASR
-					if t == "device_info" {
+					if t == protocol.EventTypeDeviceInfo {
 						sessionMu.Lock()
 						raw, _ := json.Marshal(ev)
 						var info DeviceInfoEvent
@@ -184,7 +186,7 @@ func (h *OrchestrateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 
 					// 拦截 device_command_result：处理指令执行结果，触发二次 LLM 调用
-					if t == "device_command_result" {
+					if t == protocol.EventTypeDeviceCommandResult {
 						var result DeviceCommandResultEvent
 						raw, _ := json.Marshal(ev)
 						if err := json.Unmarshal(raw, &result); err == nil {
@@ -333,7 +335,7 @@ func (h *OrchestrateHandler) handleLLMWithTools(
 
 			writeMu.Lock()
 			_ = writeJSON(conn, DeviceCommandEvent{
-				Type:     "device_command",
+				Type:     protocol.EventTypeDeviceCommand,
 				ToolID:   tc.ID,
 				Function: tc.Function.Name,
 				Params:   json.RawMessage(tc.Function.Arguments),
@@ -382,7 +384,7 @@ func (h *OrchestrateHandler) handleCommandResult(
 	if !ok {
 		// 没有缓存通常意味着是脏数据 / 重复回执，仍然给一个安全默认值。
 		log.Warn("no pending tool call found for result", "tool_id", result.ToolID)
-		pending = pendingToolCall{Name: "control_device", Arguments: "{}"}
+		pending = pendingToolCall{Name: protocol.FunctionControlDevice, Arguments: "{}"}
 	}
 
 	// 获取当前设备上下文快照
@@ -494,7 +496,7 @@ func (h *OrchestrateHandler) callLLMSecondRound(toolResult string, toolID string
 	}
 	name := pending.Name
 	if name == "" {
-		name = "control_device"
+		name = protocol.FunctionControlDevice
 	}
 
 	// 构建多轮对话：system → user(占位) → assistant(tool_call) → tool(result)

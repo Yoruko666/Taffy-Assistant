@@ -116,7 +116,7 @@ go run ./cmd/worker          # 监听 :8090
 curl http://127.0.0.1:8090/v1/health
 ```
 
-一键起全栈见根目录 [`start_all.ps1`](../start_all.ps1)。
+一键起全栈见 [`scripts/start-all.ps1`](../scripts/start-all.ps1)。
 
 ---
 

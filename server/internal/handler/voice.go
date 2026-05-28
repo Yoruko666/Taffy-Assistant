@@ -12,6 +12,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"taffy.local/pkg/protocol"
+
 	"taffy-server/internal/config"
 	"taffy-server/internal/service"
 )
@@ -185,9 +187,9 @@ func (h *VoiceHandler) pushDeviceContext(workerConn *websocket.Conn, deviceID st
 		devices = []service.DeviceContextItem{}
 	}
 
-	if err := writeJSON(workerConn, map[string]any{
-		"type":    "device_info",
-		"devices": devices,
+	if err := writeJSON(workerConn, protocol.DeviceInfoEvent{
+		Type:    protocol.EventTypeDeviceInfo,
+		Devices: devices,
 	}); err != nil {
 		log.Warn("push device context: write failed", "err", err)
 		return
@@ -281,12 +283,7 @@ func (h *VoiceHandler) pump(clientConn, workerConn *websocket.Conn, log *slog.Lo
 // handleDeviceCommand 解析 worker 下发的 device_command，
 // 委托给 [service.DeviceService] 执行后把结果回传给 worker。
 func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []byte, log *slog.Logger) {
-	var cmd struct {
-		Type     string          `json:"type"`
-		ToolID   string          `json:"tool_id"`
-		Function string          `json:"function"`
-		Params   json.RawMessage `json:"params"`
-	}
+	var cmd protocol.DeviceCommandEvent
 	if err := json.Unmarshal(data, &cmd); err != nil {
 		log.Warn("handle device command: parse failed", "err", err)
 		h.sendCommandResult(workerConn, "", false, "指令解析失败", log)
@@ -298,13 +295,13 @@ func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []by
 
 	var result service.DeviceCommandResult
 	switch cmd.Function {
-	case "control_device":
+	case protocol.FunctionControlDevice:
 		if h.deviceSvc == nil {
 			result = service.DeviceCommandResult{Success: false, Message: "数据库服务不可用"}
 		} else {
 			result = h.deviceSvc.ExecuteControlDevice(context.Background(), cmd.Params)
 		}
-	case "activate_scene":
+	case protocol.FunctionActivateScene:
 		if h.deviceSvc == nil {
 			result = service.DeviceCommandResult{Success: false, Message: "数据库服务不可用"}
 		} else {
@@ -323,11 +320,11 @@ func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []by
 
 // sendCommandResult 向 Worker 回传指令执行结果。
 func (h *VoiceHandler) sendCommandResult(workerConn *websocket.Conn, toolID string, success bool, message string, log *slog.Logger) {
-	if err := writeJSON(workerConn, map[string]any{
-		"type":    "device_command_result",
-		"tool_id": toolID,
-		"success": success,
-		"message": message,
+	if err := writeJSON(workerConn, protocol.DeviceCommandResultEvent{
+		Type:    protocol.EventTypeDeviceCommandResult,
+		ToolID:  toolID,
+		Success: success,
+		Message: message,
 	}); err != nil {
 		log.Warn("send command result: write failed", "err", err)
 	}

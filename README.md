@@ -2,7 +2,7 @@
 
 > 《软件工程》课程实践项目 · 2026 春季学期
 > 项目代号：**Taffy**（家具助手"小菲"的英文谐音；Go 模块 `taffy-server` / `taffy-worker`，Android 包 `com.taffy.client`，数据库 `taffy`）
-> 仓库地址：<https://github.com/Yoruko666/System>
+> 仓库地址：<https://github.com/Yoruko666/Taffy-Assistant>
 
 ## 项目简介
 
@@ -84,21 +84,27 @@
 | 模型服务 `model/` | Python（FastAPI） | 仅提供模型推理服务，不参与业务逻辑：<br>• **流式 ASR**（FunASR paraformer-zh-streaming，`:9100`，WS `/v1/asr/stream`）<br>• **本地 TTS**（Piper huayan-medium，`:9200`，REST `/v1/tts/synthesize`）<br>由 worker 调用 |
 | 数据库 | MySQL 8 + Redis 7（已接入） | 由 server 持有连接，客户端不直接访问 |
 | 消息中间件 | MQTT broker（Mosquitto / EMQX，外部部署） | server 既是 publisher（下发控制）也是 subscriber（接收设备状态） |
-| 版本管理 | Git + GitHub | 仓库：<https://github.com/Yoruko666/System> |
+| 版本管理 | Git + GitHub | 仓库：<https://github.com/Yoruko666/Taffy-Assistant> |
 
 ## 目录结构
 
 ```
-System/
+Taffy-Assistant/
 ├── README.md                                       # 本文件，项目总览
-├── 《软件工程》课程实践考核要求说明.pdf                # 课程官方要求
 ├── .gitignore                                      # 忽略模型权重 / wheel / 构建产物 / 生成音频
 ├── .gitattributes                                  # 跨平台换行符统一配置
 │
+├── scripts/                                        # 仓库级运维脚本
+│   ├── README.md
+│   └── start-all.ps1                               # 一键起全栈：ASR + TTS + Worker + Server
+│
 ├── docs/                                           # 项目文档
+│   ├── 00-课程实践考核要求.pdf                       # 课程官方要求
 │   ├── 01-项目策划文档.md                           # 对应考核 2.4
 │   ├── 02-需求分析文档.md                           # 对应考核 2.1
-│   └── 03-软件设计文档.md                           # 对应考核 2.2
+│   ├── 03-软件设计文档.md                           # 对应考核 2.2
+│   ├── 04-测试计划与用例报告.md                       # 对应考核 2.3
+│   └── W7-联调Checklist.md                          # 周联调备忘
 │
 ├── client/                                         # Android 客户端（Kotlin + Compose）
 │   ├── README.md
@@ -210,7 +216,7 @@ cd ..
 # 编辑 worker/config.yaml 填入大模型 URL，或通过环境变量设置 API Key
 $env:LLM_API_KEY = "sk-你的key" #单次设置
 [Environment]::SetEnvironmentVariable("LLM_API_KEY", "sk-你的key", "User") #永久设置
-.\start_all.ps1
+.\scripts\start-all.ps1
 ```
 
 等 4 个窗口中日志都稳定后，即可进行测试。关闭对应窗口即停止服务。

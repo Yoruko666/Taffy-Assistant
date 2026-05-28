@@ -1,6 +1,9 @@
 # One-click start: ASR + TTS + Worker + Server
+# 用法（在仓库根目录或 scripts/ 内均可）：
+#     .\scripts\start-all.ps1
 $ErrorActionPreference = "Stop"
-$RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir   = Split-Path -Parent $ScriptDir   # scripts/ -> 仓库根
 
 $ModelDir  = Join-Path $RootDir "model"
 $WorkerDir = Join-Path $RootDir "worker"

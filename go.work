@@ -1,0 +1,13 @@
+go 1.22
+
+// Repository uses Go workspace to wire server / worker / pkg/protocol together,
+// so server and worker share a single source of truth for WebSocket protocol structs.
+//
+// After editing pkg/protocol, both server and worker pick up the change immediately.
+// No `go get` or module proxy is involved.
+
+use (
+	./pkg/protocol
+	./server
+	./worker
+)

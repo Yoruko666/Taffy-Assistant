@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"taffy.local/pkg/protocol"
+
 	"taffy-server/internal/model"
 )
 
@@ -17,19 +19,8 @@ type DeviceCommandResult struct {
 	Message string
 }
 
-// controlDeviceParams 是 Worker LLM tool call 下发的 control_device 参数。
-// 字段全部对齐 worker 端 tool schema，请勿轻易改动。
-type controlDeviceParams struct {
-	DeviceID    string `json:"device_id"`
-	Action      string `json:"action"`
-	Brightness  *int   `json:"brightness,omitempty"`
-	Temperature *int   `json:"temperature,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Position    *int   `json:"position,omitempty"`
-}
-
 // ExecuteControlDevice 执行 Worker 下发的 control_device 指令：
-//  1. 解析参数
+//  1. 解析参数（[protocol.ControlDeviceParams]）
 //  2. 校验设备存在 + 取当前状态
 //  3. 按 action 计算新状态
 //  4. UpdateDeviceState（含权限校验）
@@ -38,7 +29,7 @@ type controlDeviceParams struct {
 // 任何错误都不会向上 panic，统一通过 [DeviceCommandResult] 返回，
 // 让 voice handler 不必关心具体业务分支。
 func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMessage) DeviceCommandResult {
-	var p controlDeviceParams
+	var p protocol.ControlDeviceParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return DeviceCommandResult{Success: false, Message: "参数解析失败: " + err.Error()}
 	}
@@ -77,7 +68,7 @@ func (s *DeviceService) ExecuteActivateScene(_ context.Context, _ json.RawMessag
 
 // applyAction 把 action 反映到 state 上。
 // 返回非空字符串表示参数校验失败原因；返回 "" 表示成功。
-func applyAction(state *model.DeviceState, p controlDeviceParams) string {
+func applyAction(state *model.DeviceState, p protocol.ControlDeviceParams) string {
 	switch p.Action {
 	case "turn_on":
 		state.Power = true

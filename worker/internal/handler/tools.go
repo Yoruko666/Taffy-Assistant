@@ -1,6 +1,8 @@
 package handler
 
-import "encoding/json"
+import (
+	"taffy.local/pkg/protocol"
+)
 
 // ──────────────────────────── Tool 定义 ────────────────────────────
 // 采用 OpenAI Function Calling 格式，让大模型按需调用控制家具的指令。
@@ -19,7 +21,7 @@ func BuildTools() []map[string]any {
 		{
 			"type": "function",
 			"function": map[string]any{
-				"name":        "control_device",
+				"name":        protocol.FunctionControlDevice,
 				"description": "控制用户的智能家居设备。当用户要求打开/关闭/调节设备时调用此函数。例如：开灯、关空调、调高温度、拉上窗帘等。",
 				"parameters": map[string]any{
 					"type": "object",
@@ -101,66 +103,32 @@ type FunctionCall struct {
 }
 
 // ──────────────────────────── 设备指令事件 ────────────────────────────
+//
+// 以下结构体作为 protocol 包的本地别名保留，保证 worker 内部命名习惯不变。
+// 真正的字段定义在 [protocol]，请勿在此处再增加字段。
 
-// ControlDeviceParams control_device 函数的参数。
-type ControlDeviceParams struct {
-	DeviceID    string `json:"device_id"`
-	Action      string `json:"action"`
-	Brightness  *int   `json:"brightness,omitempty"`
-	Temperature *int   `json:"temperature,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Position    *int   `json:"position,omitempty"`
-}
+// ControlDeviceParams 见 [protocol.ControlDeviceParams]。
+type ControlDeviceParams = protocol.ControlDeviceParams
 
-// ActivateSceneParams activate_scene 函数的参数。
-type ActivateSceneParams struct {
-	SceneID int64 `json:"scene_id"`
-}
+// ActivateSceneParams 见 [protocol.ActivateSceneParams]。
+type ActivateSceneParams = protocol.ActivateSceneParams
 
-// DeviceCommandEvent 通过 WS 发送给 Server 的设备控制事件。
-type DeviceCommandEvent struct {
-	Type     string `json:"type"`              // "device_command"
-	ToolID   string `json:"tool_id"`           // tool_call ID，用于关联结果
-	Function string `json:"function"`          // "control_device" 或 "activate_scene"
-	Params   json.RawMessage `json:"params"`   // 原始参数 JSON
-}
+// DeviceCommandEvent 见 [protocol.DeviceCommandEvent]。
+type DeviceCommandEvent = protocol.DeviceCommandEvent
 
-// DeviceCommandResultEvent Server 返回的设备控制结果事件。
-type DeviceCommandResultEvent struct {
-	Type     string `json:"type"`              // "device_command_result"
-	ToolID   string `json:"tool_id"`           // 对应的 tool_call ID
-	Success  bool   `json:"success"`           // 是否执行成功
-	Message  string `json:"message,omitempty"` // 执行结果描述（成功或失败原因）
-}
+// DeviceCommandResultEvent 见 [protocol.DeviceCommandResultEvent]。
+type DeviceCommandResultEvent = protocol.DeviceCommandResultEvent
 
 // ──────────────────────────── 设备上下文 ────────────────────────────
 
-// DeviceContext 由 Server 传递给 Worker 的用户设备信息。
-type DeviceContext struct {
-	DeviceID string `json:"device_id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Room     string `json:"room"`
-	Power    bool   `json:"power"`
-	// 可选字段
-	Brightness  *int   `json:"brightness,omitempty"`
-	Temperature *int   `json:"temperature,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Position    *int   `json:"position,omitempty"`
-}
+// DeviceContext 见 [protocol.DeviceContext]。
+type DeviceContext = protocol.DeviceContext
 
-// SceneContext 由 Server 传递给 Worker 的用户场景信息。
-type SceneContext struct {
-	SceneID int64  `json:"scene_id"`
-	Name    string `json:"name"`
-}
+// SceneContext 见 [protocol.SceneContext]。
+type SceneContext = protocol.SceneContext
 
-// DeviceInfoEvent Server 在会话开始时发送的设备列表事件。
-type DeviceInfoEvent struct {
-	Type    string          `json:"type"`    // "device_info"
-	Devices []DeviceContext `json:"devices"`
-	Scenes  []SceneContext  `json:"scenes,omitempty"`
-}
+// DeviceInfoEvent 见 [protocol.DeviceInfoEvent]。
+type DeviceInfoEvent = protocol.DeviceInfoEvent
 
 // BuildSystemPrompt 根据设备上下文动态构建 system prompt。
 func BuildSystemPrompt(basePrompt string, devices []DeviceContext, scenes []SceneContext) string {

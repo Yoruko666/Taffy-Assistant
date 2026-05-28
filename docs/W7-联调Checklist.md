@@ -216,5 +216,5 @@ W7 末（2026-06-07）必须满足：
 或直接在项目根目录：
 
 ```powershell
-.\start_all.ps1
+.\scripts\start-all.ps1
 ```

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"taffy.local/pkg/protocol"
 )
 
 // 本文件汇集 /v1/voice WebSocket 透传链路上用到的"协议级"工具函数：
@@ -55,7 +57,7 @@ func isDeviceCommand(data []byte) bool {
 		return false
 	}
 	t, _ := ev["type"].(string)
-	return t == "device_command"
+	return t == protocol.EventTypeDeviceCommand
 }
 
 // logSessionEvent 把 worker → client 的关键事件打一行精简日志，
