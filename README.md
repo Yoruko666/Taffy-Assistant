@@ -111,6 +111,7 @@ Taffy-Assistant/
 │   │   └── wsutil.go
 │   └── httpx/                                      # HTTP 小工具：Getenv + AccessLog 中间件
 │       ├── go.mod                                  # module taffy.local/pkg/httpx
+│       ├── README.md
 │       └── httpx.go
 │
 ├── docs/                                           # 项目文档
@@ -208,17 +209,21 @@ Taffy-Assistant/
 │
 └── model/                                          # 模型服务（ASR + TTS 推理）
     ├── README.md
-    ├── setup_gguf.py                               # 一键下载推理依赖
-    ├── download_model.py                           # 一键下载 ASR / TTS 模型
+    ├── setup_gguf.py                               # 一键下载推理依赖到 gguf_pkg/
+    ├── download_model.py                           # 一键下载 ASR / TTS 模型权重
     ├── start_all.ps1                               # 一键启动 ASR (:9100) + TTS (:9200)
     ├── test_stream_e2e.py                          # TTS → 流式 ASR 端到端联调
+    ├── audio_output/                               # test_stream_e2e.py 输出（按时间戳分目录，已 gitignore）
+    ├── gguf_pkg/                                   # 离线 wheel 仓库（pip download 产物，已 gitignore）
     ├── asr_server/                                 # FunASR ASR 服务（流式 WS + HTTP）
     │   ├── app.py
     │   ├── requirements.txt
-    │   └── scripts/test_stream.py
+    │   ├── scripts/test_stream.py
+    │   └── models/                                  # 模型权重目录（已 gitignore）
     └── tts_server/                                 # Piper TTS 服务（HTTP）
         ├── app.py
-        └── requirements.txt
+        ├── requirements.txt
+        └── models/                                  # 模型权重目录（已 gitignore）
 ```
 
 > 模型权重（`*.onnx` / `*.gguf` / `*.pt` 等）、wheel 包、生成音频已通过 `.gitignore` 排除，**不入库**。
@@ -342,14 +347,14 @@ curl http://127.0.0.1:8080/v1/health
 > 默认要求设备已存在且 `status != unregistered`。开发期可设环境变量 `TAFFY_VOICE_AUTH=off` 关闭校验（启动时会打 WARN）。
 > 演示账号：`device_id=dev1, token=t1`（属于用户 `13800000001`）。
 
-### 4. 家具端测试（实时麦克风，含 LLM 多轮对话 + Tool Call）
+### 5. 家具端测试（实时麦克风，含 LLM 多轮对话 + Tool Call）
 
 ```powershell
 # 实时麦克风：说话 → VAD 断句 → ASR 识别 → LLM 回复 → 恢复检测
 python furniture/mock_furniture.py --server "ws://127.0.0.1:8080/v1/voice?device_id=dev1&token=t1"
 ```
 
-### 5. 编译运行 Android 客户端
+### 6. 编译运行 Android 客户端
 
 **前置条件**：安装 [Android Studio](https://developer.android.com/studio)（Hedgehog 2023.1+），模拟器推荐 `Pixel 6 API 33+`。
 
@@ -389,7 +394,19 @@ APK 输出：`app/build/outputs/apk/debug/app-debug.apk`
 | [`docs/01-项目策划文档.md`](./docs/01-项目策划文档.md) | 项目管理、人员分工、进度安排、风险管理 | 2.4 项目管理 |
 | [`docs/02-需求分析文档.md`](./docs/02-需求分析文档.md) | 用例图、功能需求、非功能需求 | 2.1 需求分析 |
 | [`docs/03-软件设计文档.md`](./docs/03-软件设计文档.md) | 体系结构、模块设计、接口契约 | 2.2 软件设计 |
-| [`docs/04-测试计划与用例报告.md`](./docs/04-测试计划与用例报告.md) | 测试计划、用例库（76 条）、缺陷登记 | 2.3 系统测试 |
+| [`docs/04-测试计划与用例报告.md`](./docs/04-测试计划与用例报告.md) | 测试计划、用例库（目标 ≥ 40 条）、缺陷登记 | 2.3 系统测试 |
+| [`docs/W7-联调Checklist.md`](./docs/W7-联调Checklist.md) | W7（2026-06-01 ~ 06-04）端到端联调五条 Link、验收点、退出条件 | — |
+
+各模块详细 README：
+
+- [`server/README.md`](./server/README.md) — 中枢服务（鉴权 / 设备 / 对话历史 / MQTT / WS 透传）
+- [`worker/README.md`](./worker/README.md) — 大模型编排（ASR / LLM Tool Call / TTS）
+- [`model/README.md`](./model/README.md) — 本地 ASR + TTS 模型服务
+- [`furniture/README.md`](./furniture/README.md) — 家具端协议契约（音频 WS + MQTT 设备）
+- [`client/README.md`](./client/README.md) — Android 客户端
+- [`pkg/protocol/README.md`](./pkg/protocol/README.md) — Server ↔ Worker 共享协议结构体
+- [`pkg/wsutil/README.md`](./pkg/wsutil/README.md) — Server ↔ Worker 共享 WS 胶水
+- [`scripts/README.md`](./scripts/README.md) — 仓库级一键启动脚本
 
 ## 小组成员
 

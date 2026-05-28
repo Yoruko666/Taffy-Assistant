@@ -171,10 +171,13 @@ Android App ──WSS──> Go Server :8080  (WebSocket 实时消息)
 |---|---|
 | `androidx.compose.material3` | Material 3 UI 组件 |
 | `androidx.compose.material:material-icons-extended` | 设备类型图标（灯/空调/窗帘…） |
-| `androidx.compose.ui` | Compose 基础 UI |
+| `androidx.compose.ui` / `ui-tooling-preview` | Compose 基础 UI 与预览 |
+| `androidx.compose.foundation` | 基础布局 / 手势 |
 | `androidx.activity:activity-compose` | Activity + Compose 集成 |
+| `androidx.lifecycle:lifecycle-viewmodel-compose` | Compose 内 ViewModel 注入 |
 | `androidx.navigation:navigation-compose:2.7.7` | 顶层页面路由 |
 | `androidx.datastore:datastore-preferences:1.1.1` | JWT 等少量键值持久化 |
+| `androidx.core:core-ktx:1.13.1` | Kotlin 扩展 |
 | `org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0` | IO 调度 + Flow |
 | `com.squareup.okhttp3:okhttp:4.12.0` | REST + WebSocket 客户端 |
 

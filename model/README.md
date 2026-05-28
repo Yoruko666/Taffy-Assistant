@@ -15,9 +15,8 @@ model/
 ├── download_model.py           # 一键下载 ASR(流式+VAD) / TTS 模型
 ├── gguf_pkg/                   # 离线依赖包仓库（pip download 产物，已 gitignore）
 ├── start_all.ps1               # 一键启动 ASR (:9100) + TTS (:9200)
-├── test_e2e.py                 # TTS + REST ASR 冒烟
 ├── test_stream_e2e.py          # TTS → 流式 ASR 端到端测试（⭐ 主力）
-├── audio_output/               # test_stream_e2e.py 输出目录（按时间戳分子目录，建议 gitignore）
+├── audio_output/               # test_stream_e2e.py 输出目录（按时间戳分子目录，已 gitignore）
 ├── asr_server/
 │   ├── app.py                  # FastAPI ASR 服务（流式 WS + 兼容 HTTP）
 │   ├── requirements.txt
@@ -252,16 +251,7 @@ python asr_server/scripts/test_stream.py --url "ws://127.0.0.1:8080/v1/voice?dev
 
 详细参数见脚本顶部 docstring。
 
-### 2. `test_e2e.py`：TTS + REST ASR 冒烟
-
-走 TTS → 落盘 → `POST /v1/asr/transcribe` 整段识别回环，适合快速验证两端是否就绪。
-
-```powershell
-python test_e2e.py
-python test_e2e.py --text "把空调调到26度"
-```
-
-### 3. `test_stream_e2e.py`：TTS → 流式 ASR 端到端 ⭐
+### 2. `test_stream_e2e.py`：TTS → 流式 ASR 端到端 ⭐
 
 **不落盘中间文件**，把 TTS 合成的音频直接切帧喂给流式 ASR，打印每条 partial、final、首个 partial 延迟、总耗时。用来：
 
