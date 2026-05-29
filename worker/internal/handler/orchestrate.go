@@ -21,6 +21,7 @@ import (
 //	text   {"type":"start", ...}
 //	binary <16-bit LE PCM mono>
 //	text   {"type":"end" | "ping" | "device_info" | "device_command_result"}
+//	text   {"type":"text_input","text":"..."}  // UC-05：客户端纯文本对话（跳过 ASR，直接走 LLM）
 //
 // 下行（worker → server）：
 //
@@ -170,6 +171,25 @@ func (h *OrchestrateHandler) handleUpstreamControl(s *Session, data []byte) bool
 		raw, _ := json.Marshal(ev)
 		if err := json.Unmarshal(raw, &result); err == nil {
 			go h.handleCommandResult(s, result)
+		}
+		return true
+
+	case protocol.EventTypeTextInput:
+		// UC-05 文本对话：跳过 ASR 直接进入 LLM Tool Call 主链路。
+		text, _ := ev["text"].(string)
+		if text == "" {
+			s.Log().Info("text_input empty, skip llm")
+			_ = s.WriteJSON(map[string]any{"type": "llm_result", "text": ""})
+			return true
+		}
+		// 把文本回显成 asr_final 给客户端，统一 UI 渲染逻辑。
+		_ = s.WriteJSON(map[string]any{"type": "asr_final", "text": text})
+
+		if h.cfg != nil && h.cfg.LLM.URL != "" {
+			devices, scenes := s.SnapshotDeviceContext()
+			go h.handleLLMWithTools(s, text, devices, scenes)
+		} else {
+			_ = s.WriteJSON(map[string]any{"type": "llm_error", "message": "LLM 未配置"})
 		}
 		return true
 	}

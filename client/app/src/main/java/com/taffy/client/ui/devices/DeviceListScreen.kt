@@ -5,17 +5,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -32,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -45,6 +49,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.taffy.client.TaffyApplication
 import com.taffy.client.data.DeviceCard
+import com.taffy.client.websocket.RealtimeWebSocket
 
 /**
  * 设备列表页：UC-04 主舞台。
@@ -63,8 +69,9 @@ import com.taffy.client.data.DeviceCard
 @Composable
 fun DeviceListScreen(
     onLogout: () -> Unit,
-    onOpenVoice: () -> Unit,
+    onOpenChat: () -> Unit,
     onAddDevice: () -> Unit,
+    onOpenDetail: (deviceId: String) -> Unit,
     refreshTick: Int = 0,
 ) {
     val context = LocalContext.current
@@ -94,11 +101,18 @@ fun DeviceListScreen(
     var menuTarget by remember { mutableStateOf<DeviceCard?>(null) }
     var renameTarget by remember { mutableStateOf<DeviceCard?>(null) }
     var unbindTarget by remember { mutableStateOf<DeviceCard?>(null) }
+    var showLogoutDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("我的设备") },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("我的设备")
+                        Spacer(Modifier.width(8.dp))
+                        RealtimeBadge(state.realtimeConnection)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -116,8 +130,11 @@ fun DeviceListScreen(
                             Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                         }
                     }
-                    IconButton(onClick = onOpenVoice) {
-                        Icon(Icons.Filled.Mic, contentDescription = "语音对话")
+                    IconButton(onClick = onOpenChat) {
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "跟小菲聊天")
+                    }
+                    IconButton(onClick = { showLogoutDialog = true }) {
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "登出")
                     }
                 },
             )
@@ -145,6 +162,7 @@ fun DeviceListScreen(
                             card = card,
                             pending = state.pendingDeviceIds.contains(card.device.deviceId),
                             onTogglePower = { vm.togglePower(card) },
+                            onClick = { onOpenDetail(card.device.deviceId) },
                             onLongPress = { menuTarget = card },
                         )
                         // 长按菜单（与卡片 anchor）
@@ -204,6 +222,24 @@ fun DeviceListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { unbindTarget = null }) { Text("取消") }
+            },
+        )
+    }
+
+    // 登出确认对话框
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = { Text("退出登录？") },
+            text = { Text("退出后需要重新输入手机号 + 密码登录。") },
+            confirmButton = {
+                Button(onClick = {
+                    showLogoutDialog = false
+                    vm.logout()
+                }) { Text("退出登录") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutDialog = false }) { Text("取消") }
             },
         )
     }
@@ -277,5 +313,26 @@ private fun EmptyHint(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/** 标题旁的实时连接状态小徽章。绿点=在线，黄点=连接中，红点=离线。*/
+@Composable
+private fun RealtimeBadge(state: RealtimeWebSocket.ConnectionState) {
+    val (label, color) = when (state) {
+        RealtimeWebSocket.ConnectionState.CONNECTED -> "实时" to Color(0xFF66BB6A)
+        RealtimeWebSocket.ConnectionState.CONNECTING -> "连接中" to Color(0xFFFFB300)
+        RealtimeWebSocket.ConnectionState.DISCONNECTED -> "离线" to Color(0xFFEF5350)
+    }
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = color.copy(alpha = 0.18f),
+    ) {
+        Text(
+            text = "● $label",
+            color = color,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
     }
 }

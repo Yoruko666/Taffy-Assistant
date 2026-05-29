@@ -9,6 +9,8 @@ import com.taffy.client.data.Device
 import com.taffy.client.data.DeviceCard
 import com.taffy.client.data.DeviceState
 import com.taffy.client.data.TokenStore
+import com.taffy.client.websocket.RealtimeEvent
+import com.taffy.client.websocket.RealtimeWebSocket
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +30,8 @@ data class DeviceListUiState(
     val unauthorized: Boolean = false,
     /** 正在切换中的 device_id 集合，UI 显示 progress。*/
     val pendingDeviceIds: Set<String> = emptySet(),
+    /** UC-10 实时推送链路的连接状态。*/
+    val realtimeConnection: RealtimeWebSocket.ConnectionState = RealtimeWebSocket.ConnectionState.DISCONNECTED,
 )
 
 class DeviceListViewModel(
@@ -38,8 +42,24 @@ class DeviceListViewModel(
     private val _uiState = MutableStateFlow(DeviceListUiState())
     val uiState: StateFlow<DeviceListUiState> = _uiState.asStateFlow()
 
+    /** UC-10 实时状态推送：在 ViewModel 生命周期内长连，监听 device_state_changed。*/
+    private val realtime = RealtimeWebSocket(
+        scope = viewModelScope,
+        tokenProvider = { tokenStore.tokenOnce() },
+        onEvent = ::onRealtimeEvent,
+        onConnectionChanged = { state ->
+            _uiState.update { it.copy(realtimeConnection = state) }
+        },
+    )
+
     init {
         refresh(initial = true)
+        realtime.connect()
+    }
+
+    override fun onCleared() {
+        realtime.disconnect()
+        super.onCleared()
     }
 
     fun refresh(initial: Boolean = false) {
@@ -118,6 +138,14 @@ class DeviceListViewModel(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    /** 登出：清掉本地 JWT，触发 unauthorized 状态使 UI 跳回登录页。*/
+    fun logout() {
+        viewModelScope.launch {
+            tokenStore.clear()
+            _uiState.update { it.copy(unauthorized = true) }
+        }
+    }
+
     /** 重命名设备（修改 name / room）。成功后局部刷新该卡片，避免整体 reload 抖动。*/
     fun renameDevice(deviceId: String, name: String, room: String) {
         if (name.isBlank()) {
@@ -176,6 +204,33 @@ class DeviceListViewModel(
         val newState = card.state?.copy(power = power)
             ?: DeviceState(deviceId = card.device.deviceId, power = power)
         return card.copy(state = newState)
+    }
+
+    /**
+     * 处理服务端推来的实时事件。
+     * 当前仅有 device_state_changed —— 把卡片中对应字段就地替换（保留 device 元数据）。
+     * 推送以"全状态"形式下发，所以直接覆盖；任何非 null 字段都按"已设值"处理，
+     * null 字段保持原值（避免清零本地有意义的数据）。
+     */
+    private fun onRealtimeEvent(event: RealtimeEvent) {
+        when (event) {
+            is RealtimeEvent.DeviceStateChanged -> _uiState.update { s ->
+                val newCards = s.cards.map { card ->
+                    if (card.device.deviceId != event.deviceId) return@map card
+                    val base = card.state
+                        ?: DeviceState(deviceId = event.deviceId, power = event.power == true)
+                    val merged = base.copy(
+                        power = event.power ?: base.power,
+                        brightness = event.brightness ?: base.brightness,
+                        temperature = event.temperature ?: base.temperature,
+                        mode = event.mode ?: base.mode,
+                        position = event.position ?: base.position,
+                    )
+                    card.copy(state = merged)
+                }
+                s.copy(cards = newCards)
+            }
+        }
     }
 
     private fun mergeCards(devices: List<Device>, states: List<DeviceState>): List<DeviceCard> {

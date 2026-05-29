@@ -16,6 +16,7 @@ import (
 	"taffy.local/pkg/wsutil"
 
 	"taffy-server/internal/config"
+	"taffy-server/internal/hub"
 	"taffy-server/internal/model"
 	"taffy-server/internal/service"
 )
@@ -26,10 +27,12 @@ import (
 //   - 拦截 Worker 的 device_command，委托 service 层执行后回传结果
 //   - 会话建立时推送设备上下文给 Worker
 //   - 把 asr_final / llm_result / device_command 异步落库
+//   - 设备控制成功后通过 [hub.Publisher] 向客户端广播 device_state_changed（UC-10）
 type VoiceHandler struct {
 	workerWSURL string
 	deviceSvc   *service.DeviceService
 	convSvc     *service.ConversationService
+	pub         hub.Publisher // 可为 nil，nil 时跳过实时推送（降级行为）
 	upgrader    websocket.Upgrader
 	dialer      *websocket.Dialer
 
@@ -37,8 +40,13 @@ type VoiceHandler struct {
 	authEnabled bool
 }
 
-// NewVoiceHandler 构造 voice handler。convSvc 为 nil 时跳过对话历史落库。
-func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService, convSvc *service.ConversationService) *VoiceHandler {
+// NewVoiceHandler 构造 voice handler。convSvc / pub 为 nil 时分别跳过对话历史落库 / 实时推送。
+func NewVoiceHandler(
+	cfg *config.AppConfig,
+	deviceSvc *service.DeviceService,
+	convSvc *service.ConversationService,
+	pub hub.Publisher,
+) *VoiceHandler {
 	workerURL := ""
 	if cfg != nil {
 		workerURL = cfg.Worker.WSURL
@@ -54,6 +62,7 @@ func NewVoiceHandler(cfg *config.AppConfig, deviceSvc *service.DeviceService, co
 		workerWSURL: workerURL,
 		deviceSvc:   deviceSvc,
 		convSvc:     convSvc,
+		pub:         pub,
 		authEnabled: authEnabled,
 		upgrader:    wsutil.DefaultUpgrader(),
 		dialer:      wsutil.DefaultDialer(),
@@ -318,6 +327,42 @@ func (h *VoiceHandler) handleDeviceCommand(workerConn *websocket.Conn, data []by
 		"tool_id", cmd.ToolID, "success", result.Success, "message", result.Message)
 	h.sendCommandResult(workerConn, cmd.ToolID, result.Success, result.Message, log)
 	vs.markCommandResult(cmd.ToolID, result.Success)
+
+	// 推送设备状态变更给在线客户端（UC-10），仅在控制成功时触发。
+	if result.Success && cmd.Function == protocol.FunctionControlDevice {
+		h.broadcastStateChange(cmd.Params, log)
+	}
+}
+
+// broadcastStateChange 反查目标设备 owner，向其在线客户端推送 device_state_changed。
+//
+// 失败容错：hub 不可用 / DB 查询失败 / 设备已解绑（owner_id IS NULL）→ 静默跳过，
+// 不影响主控制链路。
+func (h *VoiceHandler) broadcastStateChange(params json.RawMessage, log *slog.Logger) {
+	if h.pub == nil || h.deviceSvc == nil {
+		return
+	}
+	var p protocol.ControlDeviceParams
+	if err := json.Unmarshal(params, &p); err != nil || p.DeviceID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	device, err := h.deviceSvc.GetDevice(ctx, p.DeviceID)
+	if err != nil || device == nil || device.OwnerID == nil {
+		return
+	}
+	state, err := h.deviceSvc.GetDeviceState(ctx, p.DeviceID)
+	if err != nil {
+		return
+	}
+	h.pub.BroadcastToUser(*device.OwnerID, map[string]any{
+		"type":      "device_state_changed",
+		"device_id": p.DeviceID,
+		"state":     state,
+	})
+	log.Info("device state broadcast", "device_id", p.DeviceID, "user_id", *device.OwnerID)
 }
 
 // sendCommandResult 向 Worker 回传指令执行结果。

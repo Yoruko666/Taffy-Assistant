@@ -64,9 +64,9 @@
 | `/api/v1/devices/bindable` | HTTPS | 客户端 App | UC-03：列出待绑定池中的设备（`?reveal=1` 返回 bind_code） |
 | `/api/v1/devices/bind` | HTTPS | 客户端 App | UC-03：绑定池设备到当前用户（POST，JWT 鉴权） |
 | `/api/v1/devices/{id}` | HTTPS | 客户端 App | 重命名设备（PUT）/ 解绑设备（DELETE），JWT 鉴权 |
+| `/ws` | WSS | 客户端 App | UC-10：实时状态推送通道（query 携带 JWT；仅下行 `device_state_changed`，控制成功后由 server 主动 broadcast） |
 | `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理（计划中） |
-| `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史查询（计划中；写入已完成） |
-| `/ws` | WSS | 客户端 App | 设备状态实时推送（计划中） |
+| `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史查询（已被产品形态淘汰：详见软件设计文档 v1.8） |
 | `/v1/health` | HTTP | 运维 / 客户端 | 健康检查（含 worker / db / redis / mqtt 四项状态） |
 
 ---
@@ -362,8 +362,8 @@ MQTT bridge 实现在 [`internal/mqtt/bridge.go`](internal/mqtt/bridge.go)：
 - [x] 对话历史落库（conversations / messages / commands 写入路径完整）
 - [x] 标准化 REST 错误码 `{error, message}`
 - [x] UC-03 设备绑定 + UC-11 解绑 + 重命名（待绑定池模式 + bind_code）
-- [ ] 对话历史查询 API（`/api/v1/conversations/*`）
-- [ ] 客户端 WebSocket 状态推送 Hub（`/ws` 通道）
+- [x] UC-10 客户端实时状态推送 Hub（`/ws` 通道，per-user 房间，控制后自动 broadcast）
+- [ ] 对话历史查询 API（`/api/v1/conversations/*`）—— 已确定**不做**：本系统对话本质是命令通道，UI 只显示设备状态变更而非聊天历史
 - [ ] 健康巡检：定时打 worker `/v1/health`，掉线自动降级
 - [ ] 场景管理（`/api/v1/scenes/*` + `activate_scene` tool 落地）
 - [ ] 限流 / 审计日志

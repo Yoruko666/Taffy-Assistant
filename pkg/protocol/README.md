@@ -20,6 +20,7 @@ import "taffy.local/pkg/protocol"
 protocol.EventTypeDeviceInfo           // "device_info"
 protocol.EventTypeDeviceCommand        // "device_command"
 protocol.EventTypeDeviceCommandResult  // "device_command_result"
+protocol.EventTypeTextInput            // "text_input"  （UC-05 客户端纯文本对话，跳过 ASR）
 ```
 
 ### LLM 工具函数名常量

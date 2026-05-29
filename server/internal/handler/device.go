@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"taffy-server/internal/hub"
 	"taffy-server/internal/middleware"
 	"taffy-server/internal/model"
 	"taffy-server/internal/service"
@@ -27,11 +28,12 @@ const (
 // DeviceHandler 设备相关 HTTP 处理器。
 type DeviceHandler struct {
 	deviceSvc *service.DeviceService
+	pub       hub.Publisher // 可为 nil；nil 时跳过实时广播
 }
 
-// NewDeviceHandler 创建 DeviceHandler。
-func NewDeviceHandler(deviceSvc *service.DeviceService) *DeviceHandler {
-	return &DeviceHandler{deviceSvc: deviceSvc}
+// NewDeviceHandler 创建 DeviceHandler。pub 为 nil 时跳过实时推送（降级行为）。
+func NewDeviceHandler(deviceSvc *service.DeviceService, pub hub.Publisher) *DeviceHandler {
+	return &DeviceHandler{deviceSvc: deviceSvc, pub: pub}
 }
 
 // ListDevices GET /api/v1/devices
@@ -144,6 +146,15 @@ func (h *DeviceHandler) UpdateDeviceState(w http.ResponseWriter, r *http.Request
 		slog.Error("update device state failed", "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+
+	// 实时广播给当前用户在线的所有客户端（UC-10），current 已是合并后的最新状态。
+	if h.pub != nil {
+		h.pub.BroadcastToUser(userID, map[string]any{
+			"type":      "device_state_changed",
+			"device_id": req.DeviceID,
+			"state":     current,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

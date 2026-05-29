@@ -30,6 +30,7 @@ import (
 	"taffy-server/internal/config"
 	"taffy-server/internal/database"
 	"taffy-server/internal/handler"
+	"taffy-server/internal/hub"
 	"taffy-server/internal/middleware"
 	"taffy-server/internal/mqtt"
 	"taffy-server/internal/repository"
@@ -86,6 +87,7 @@ type deps struct {
 	rdb       *redis.Client
 	mqtt      *mqtt.Bridge
 	jwtMW     *middleware.JWTMiddleware
+	hub       *hub.Hub
 	userSvc   *service.UserService
 	deviceSvc *service.DeviceService
 	convSvc   *service.ConversationService
@@ -120,6 +122,9 @@ func buildDeps(cfg *config.AppConfig) *deps {
 
 	// JWT 中间件总是装配；rdb 为 nil 时黑名单功能自动降级。
 	d.jwtMW = middleware.NewJWTMiddleware(&cfg.JWT, d.rdb)
+
+	// Hub 始终启用——纯内存实现，无外部依赖。
+	d.hub = hub.New(slog.Default())
 
 	if d.db != nil {
 		userRepo := repository.NewUserRepo(d.db)
@@ -163,8 +168,9 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 	mux := http.NewServeMux()
 
 	authHandler := handler.NewAuthHandler(d.userSvc, d.jwtMW, cfg)
-	deviceHandler := handler.NewDeviceHandler(d.deviceSvc)
-	voiceHandler := handler.NewVoiceHandler(cfg, d.deviceSvc, d.convSvc)
+	deviceHandler := handler.NewDeviceHandler(d.deviceSvc, d.hub)
+	voiceHandler := handler.NewVoiceHandler(cfg, d.deviceSvc, d.convSvc, d.hub)
+	realtimeHandler := handler.NewRealtimeHandler(d.jwtMW, d.hub)
 
 	var mqttProbe func() string
 	if d.mqtt != nil {
@@ -175,6 +181,7 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 	})
 
 	mux.Handle("/v1/voice", voiceHandler)
+	mux.Handle("/ws", realtimeHandler)
 
 	mux.HandleFunc("/api/v1/auth/register", postOnly(authHandler.Register))
 	mux.HandleFunc("/api/v1/auth/login", postOnly(authHandler.Login))

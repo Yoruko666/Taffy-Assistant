@@ -32,25 +32,34 @@ client/
             ├── TaffyApplication.kt           # Application 入口（持有 TokenStore + ApiClient 单例）
             ├── MainActivity.kt              # 仅承载 AppNav
             ├── data/
-            │   ├── ApiClient.kt             # OkHttp 封装的 REST 客户端（auth + devices），错误统一为 ApiResult
-            │   ├── Models.kt                # Device / DeviceState / DeviceCard / AuthToken / ApiResult(code+message+httpCode)
+            │   ├── ApiClient.kt             # OkHttp 封装的 REST 客户端（auth + devices + bind/rename/unbind）
+            │   ├── Models.kt                # Device / DeviceState / DeviceCard / BindableDevice / AuthToken / ApiResult
             │   └── TokenStore.kt            # JWT 持久化（Jetpack DataStore）
             ├── ui/
-            │   ├── AppNav.kt                # Navigation Compose 顶层路由（login / devices / voice）
+            │   ├── AppNav.kt                # Navigation Compose 顶层路由（login / devices / bind / chat / detail / voice）
             │   ├── login/
             │   │   ├── LoginScreen.kt       # 登录 / 注册（同页 Mode 切换）
             │   │   └── LoginViewModel.kt    # 按 server error code 翻译中文文案
             │   ├── devices/
-            │   │   ├── DeviceListScreen.kt  # UC-03 列表骨架（顶栏 / 加载态 / 空态）
-            │   │   ├── DeviceCard.kt        # 单卡片：图标 + 名称 + 状态 chip + 开关
+            │   │   ├── DeviceListScreen.kt  # UC-04 列表：FAB 添加 / 单击进详情 / 长按重命名解绑 / Chat / Logout / 实时连接 Badge
+            │   │   ├── DeviceCard.kt        # 单卡片：图标 + 名称 + 状态 chip + 开关（支持单击进详情 + 长按弹菜单）
             │   │   ├── DeviceFormat.kt      # 状态副标题拼装（"亮度 80%  26°C 制冷"）
-            │   │   └── DeviceListViewModel.kt # 乐观更新 + 失败回滚 + 401 跳登录
+            │   │   ├── DeviceListViewModel.kt # 乐观更新 + 失败回滚 + 401 跳登录 + logout + RealtimeWebSocket 接入（UC-10）
+            │   │   ├── DeviceDetailScreen.kt # 详情页：电源 + 亮度/温度/模式/开合度滑块（按 type 渲染）
+            │   │   ├── DeviceDetailViewModel.kt # 滑块松手才提交，乐观更新 + 失败回滚
+            │   │   ├── BindDeviceScreen.kt  # UC-03 绑定页：池设备 + 输入绑定码
+            │   │   └── BindDeviceViewModel.kt
+            │   ├── chat/
+            │   │   ├── TextChatScreen.kt    # UC-05 文本对话：双气泡 + 输入框 + 小菲思考中提示
+            │   │   └── ChatViewModel.kt     # 维护 ChatWebSocket + 消息列表 + 等待回复指示
             │   ├── voice/
-            │   │   └── VoiceChatScreen.kt   # 语音对话（联调期 WS 监视器，消息上限 500 条自动裁剪）
+            │   │   └── VoiceChatScreen.kt   # 语音事件流监视器（联调期 WS 诊断窗口）
             │   └── theme/
             │       └── Theme.kt             # Material 3 亮 / 暗主题
             └── websocket/
-                └── ServerWebSocket.kt       # WebSocket 连接管理（自动重连，3s 退避）
+                ├── ServerWebSocket.kt       # 联调诊断用 WS（无限自动重连）
+                ├── ChatWebSocket.kt         # UC-05 文本对话用 WS（按需连接，发 text_input 收 llm_result）
+                └── RealtimeWebSocket.kt     # UC-10 实时状态推送 WS（JWT 鉴权，仅下行 device_state_changed）
 ```
 
 ## 前置要求
@@ -126,17 +135,20 @@ buildConfigField("int", "SERVER_PORT", "8080")
 | 功能 | 状态 |
 |---|---|
 | 用户注册 / 登录（手机号 + 密码） | ✅ POST /api/v1/auth/{register,login}，按 server error code 翻译 |
+| **登出（UC-02 闭环）** | ✅ AppBar 右上 Logout 图标 → 弹确认 → 清 JWT 跳登录页 |
 | JWT 持久化（DataStore） | ✅ 启动自动恢复登录态 |
 | 设备列表（按用户隔离） | ✅ GET /api/v1/devices + /devices/states |
 | 设备开关（卡片即点即生效） | ✅ PUT /api/v1/devices/state（乐观更新+失败回滚） |
-| **设备绑定（UC-03）** | ✅ 右下角 FAB → 绑定页 → 选池设备 → 输入名称/房间/绑定码 |
-| **设备解绑（UC-11）** | ✅ 卡片**长按** → 解绑（含确认对话框） |
-| **重命名设备** | ✅ 卡片**长按** → 重命名 |
+| 设备绑定（UC-03） | ✅ 右下角 FAB → 绑定页 → 选池设备 → 输入名称/房间/绑定码 |
+| 设备解绑（UC-11） | ✅ 卡片**长按** → 解绑（含确认对话框） |
+| 重命名设备 | ✅ 卡片**长按** → 重命名 |
+| **设备详情页（UC-04 增强）** | ✅ 卡片**单击** → 详情页：电源 + 亮度/温度/模式/开合度滑块（按设备类型渲染，松手提交） |
+| **实时状态推送（UC-10）** | ✅ `RealtimeWebSocket` 连 `/ws?token=<jwt>` → 监听 `device_state_changed` → 卡片 / 详情页自动翻转，无需手动刷新 |
+| **文本对话（UC-05）** | ✅ AppBar Chat 图标 → 跟小菲聊聊：输入"打开客厅灯"等 → 看到识别回显 + 小菲回复 + 设备状态变更 |
 | 离线设备保护 | ✅ status=offline 的设备禁止控制 |
 | 401 自动登出 | ✅ token 过期回到登录页 |
-| 语音对话页（WS 监听） | ✅ 联调期诊断窗口，最多保留 500 条消息后自动裁剪 |
-| 录音按钮 / 文本对话上行 | 📅 计划中 |
-| 设备详情页（亮度/温度滑块） | 📅 计划中 |
+| 语音事件流监视器 | ✅ `Routes.VOICE` 隐藏路径，联调期诊断窗口 |
+| 录音按钮 / 语音上行 | 📅 计划中（家具端 mock_furniture 已完整支持） |
 
 ### 测试账号（来自 `server/migrations/002_seed.sql`）
 

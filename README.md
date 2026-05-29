@@ -321,7 +321,8 @@ curl http://127.0.0.1:8080/v1/health
 | 方向 | 类型 | 说明 |
 |---|---|---|
 | 家具→Server | `start` / binary / `end` / `ping` | 音频上行 |
-| Server→家具 | `pong` / `asr_partial` / `asr_final` / `eos` / `llm_result` / `tts_audio` / `llm_error` / `error` | 识别结果、文本回复、TTS 语音回复 |
+| Android→Server | `text_input` | UC-05 文本对话上行（跳过 ASR 直接走 LLM） |
+| Server→家具/客户端 | `pong` / `asr_partial` / `asr_final` / `eos` / `llm_result` / `tts_audio` / `llm_error` / `error` | 识别结果、文本回复、TTS 语音回复 |
 
 #### Tool Call 扩展消息
 
@@ -345,6 +346,7 @@ curl http://127.0.0.1:8080/v1/health
 | `POST` | `/api/v1/devices/bind` | JWT | UC-03：把池设备绑定到当前用户 |
 | `PUT` | `/api/v1/devices/{id}` | JWT | 重命名设备（修改 name / room） |
 | `DELETE` | `/api/v1/devices/{id}` | JWT | UC-11：解绑设备（级联删除其状态） |
+| `GET (WS)` | `/ws?token=<jwt>` | JWT | UC-10：客户端实时状态推送通道（仅下行 `device_state_changed` 等） |
 
 > 鉴权方式：在请求头添加 `Authorization: Bearer <jwt_token>`
 >

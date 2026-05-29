@@ -11,6 +11,7 @@ const (
 	EventTypeDeviceInfo          = "device_info"           // Server → Worker：会话建立后推送当前用户设备列表
 	EventTypeDeviceCommand       = "device_command"        // Worker → Server：LLM tool call 触发的设备控制请求
 	EventTypeDeviceCommandResult = "device_command_result" // Server → Worker：上一条 device_command 的执行结果
+	EventTypeTextInput           = "text_input"            // Client → Server → Worker：UC-05 客户端纯文本对话（跳过 ASR）
 )
 
 // LLM 工具函数名常量。

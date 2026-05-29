@@ -38,7 +38,11 @@ import com.taffy.client.data.DeviceCard as DeviceCardModel
 /**
  * 单设备卡片：图标 + 名称 + 状态描述 + 开关。
  * pending=true 时右侧显示进度圈；离线时背景变灰、开关禁用。
- * 卡片支持**长按**触发 [onLongPress]——上层用来弹"重命名/解绑"菜单。
+ *
+ * 交互：
+ *   - 单击 [onClick]：进入设备详情页（亮度/温度/模式/开合度滑块）；
+ *   - 长按 [onLongPress]：弹出"重命名 / 解绑"菜单；
+ *   - 右侧 Switch 独立处理电源开关，不冒泡到卡片。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -46,6 +50,7 @@ fun DeviceCardRow(
     card: DeviceCardModel,
     pending: Boolean,
     onTogglePower: () -> Unit,
+    onClick: () -> Unit = {},
     onLongPress: () -> Unit = {},
 ) {
     val containerColor =
@@ -57,7 +62,7 @@ fun DeviceCardRow(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
-                onClick = {},
+                onClick = onClick,
                 onLongClick = onLongPress,
             ),
     ) {
