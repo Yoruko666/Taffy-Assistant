@@ -61,6 +61,9 @@
 | `/api/v1/devices/states` | HTTPS | 客户端 App | 获取当前用户所有设备状态（JWT 鉴权） |
 | `/api/v1/devices/state` | HTTPS | 客户端 App | 更新设备状态（PUT，JWT 鉴权） |
 | `/api/v1/devices/{id}/state` | HTTPS | 客户端 App | 获取单个设备状态（JWT 鉴权） |
+| `/api/v1/devices/bindable` | HTTPS | 客户端 App | UC-03：列出待绑定池中的设备（`?reveal=1` 返回 bind_code） |
+| `/api/v1/devices/bind` | HTTPS | 客户端 App | UC-03：绑定池设备到当前用户（POST，JWT 鉴权） |
+| `/api/v1/devices/{id}` | HTTPS | 客户端 App | 重命名设备（PUT）/ 解绑设备（DELETE），JWT 鉴权 |
 | `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理（计划中） |
 | `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史查询（计划中；写入已完成） |
 | `/ws` | WSS | 客户端 App | 设备状态实时推送（计划中） |
@@ -203,6 +206,13 @@ go get golang.org/x/crypto
 | `phone_already_registered` | auth/register | 409 |
 | `email_already_registered` | auth/register | 409 |
 | `invalid_phone_or_password` | auth/login | 401 |
+| `unauthorized` | device/* | 401 |
+| `device_id_required` | device/bind / rename / unbind | 400 |
+| `bind_code_required` | device/bind | 400 |
+| `name_required` | device/rename | 400 |
+| `invalid_bind_code` | device/bind | 409 |
+| `device_not_found` | device/rename / unbind | 404 |
+| `not_device_owner` | device/state / rename / unbind | 403 |
 | `internal_error` | 所有 5xx | 500 |
 
 ### 数据库初始化
@@ -213,6 +223,9 @@ Get-Content migrations/001_init.sql | mysql -u root -p
 
 # 可选：插入测试数据
 Get-Content migrations/002_seed.sql | mysql -u root -p
+
+# UC-03 设备绑定支持（owner_id 改可空 + bind_code 字段 + 6 台待绑定池设备）
+Get-Content migrations/003_device_binding.sql | mysql -u root -p
 ```
 
 > LLM / ASR / TTS 配置（API Key、URL、模型名等）见 [`../worker/config.yaml`](../worker/config.yaml)，Server 不持有 `LLM_API_KEY`。
@@ -348,6 +361,7 @@ MQTT bridge 实现在 [`internal/mqtt/bridge.go`](internal/mqtt/bridge.go)：
 - [x] 接入 MQTT（`eclipse/paho.mqtt.golang`），与 mock_devices 协议对齐
 - [x] 对话历史落库（conversations / messages / commands 写入路径完整）
 - [x] 标准化 REST 错误码 `{error, message}`
+- [x] UC-03 设备绑定 + UC-11 解绑 + 重命名（待绑定池模式 + bind_code）
 - [ ] 对话历史查询 API（`/api/v1/conversations/*`）
 - [ ] 客户端 WebSocket 状态推送 Hub（`/ws` 通道）
 - [ ] 健康巡检：定时打 worker `/v1/health`，掉线自动降级

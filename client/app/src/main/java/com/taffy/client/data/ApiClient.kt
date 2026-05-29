@@ -98,6 +98,57 @@ class ApiClient(private val tokenStore: TokenStore) {
         return res.map { }
     }
 
+    // 设备绑定 / 解绑 / 重命名 (UC-03 / UC-11)
+
+    /**
+     * 列出待绑定池中的所有设备。
+     * @param revealCode 演示模式：true 时附带 bind_code，方便用户复制；正式部署应置 false。
+     */
+    suspend fun listBindableDevices(revealCode: Boolean = true): ApiResult<List<BindableDevice>> {
+        val path = "/api/v1/devices/bindable" + if (revealCode) "?reveal=1" else ""
+        val res = get(path)
+        return res.map { json ->
+            val arr = json.optJSONArray("devices") ?: JSONArray()
+            (0 until arr.length()).map { i -> arr.getJSONObject(i).toBindableDevice() }
+        }
+    }
+
+    /** 绑定一台池中设备到当前用户。*/
+    suspend fun bindDevice(
+        deviceId: String,
+        bindCode: String,
+        name: String,
+        room: String,
+    ): ApiResult<Device> {
+        val body = JSONObject().apply {
+            put("device_id", deviceId)
+            put("bind_code", bindCode)
+            put("name", name)
+            put("room", room)
+        }
+        val res = post("/api/v1/devices/bind", body)
+        return res.map { json ->
+            val d = json.optJSONObject("device") ?: JSONObject()
+            d.toDevice()
+        }
+    }
+
+    /** 重命名设备（修改 name / room）。*/
+    suspend fun renameDevice(deviceId: String, name: String, room: String): ApiResult<Unit> {
+        val body = JSONObject().apply {
+            put("name", name)
+            put("room", room)
+        }
+        val res = put("/api/v1/devices/$deviceId", body)
+        return res.map { }
+    }
+
+    /** 解绑设备（=删除归属）。*/
+    suspend fun unbindDevice(deviceId: String): ApiResult<Unit> {
+        val res = delete("/api/v1/devices/$deviceId")
+        return res.map { }
+    }
+
     // HTTP 内部封装
 
     private suspend fun get(path: String): ApiResult<JSONObject> = withContext(Dispatchers.IO) {
@@ -123,6 +174,10 @@ class ApiClient(private val tokenStore: TokenStore) {
             .url(baseUrl + path)
             .put(body.toString().toRequestBody(jsonMediaType))
         execute(builder.withAuth())
+    }
+
+    private suspend fun delete(path: String): ApiResult<JSONObject> = withContext(Dispatchers.IO) {
+        execute(Request.Builder().url(baseUrl + path).delete().withAuth())
     }
 
     private suspend fun Request.Builder.withAuth(): Request.Builder {
@@ -185,11 +240,18 @@ private fun JSONObject.toAuthToken(): AuthToken = AuthToken(
 
 private fun JSONObject.toDevice(): Device = Device(
     deviceId = optString("device_id"),
-    ownerId = optLong("owner_id"),
+    ownerId = if (isNull("owner_id")) null else optLong("owner_id"),
     type = optString("type"),
     name = optString("name"),
     room = optString("room"),
     status = optString("status"),
+)
+
+private fun JSONObject.toBindableDevice(): BindableDevice = BindableDevice(
+    deviceId = optString("device_id"),
+    type = optString("type"),
+    name = optString("name"),
+    bindCode = optString("bind_code").takeIf { it.isNotBlank() },
 )
 
 private fun JSONObject.toDeviceState(): DeviceState = DeviceState(

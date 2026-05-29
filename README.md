@@ -297,6 +297,7 @@ cd server
 # 1. 先启动 MySQL，然后执行迁移脚本：
 Get-Content migrations/001_init.sql | mysql -u root -p   # 建库建表
 Get-Content migrations/002_seed.sql | mysql -u root -p   # 可选：插入测试数据
+Get-Content migrations/003_device_binding.sql | mysql -u root -p  # UC-03 设备绑定支持
 
 # 2. 修改 config.yaml 中的 mysql.password 和 jwt.secret
 
@@ -340,6 +341,10 @@ curl http://127.0.0.1:8080/v1/health
 | `GET` | `/api/v1/devices/states` | JWT | 获取当前用户所有设备状态 |
 | `PUT` | `/api/v1/devices/state` | JWT | 更新设备状态（power/温度/亮度/开合度） |
 | `GET` | `/api/v1/devices/{id}/state` | JWT | 获取单个设备状态 |
+| `GET` | `/api/v1/devices/bindable` | JWT | UC-03：列出待绑定池中的设备（`?reveal=1` 附带绑定码） |
+| `POST` | `/api/v1/devices/bind` | JWT | UC-03：把池设备绑定到当前用户 |
+| `PUT` | `/api/v1/devices/{id}` | JWT | 重命名设备（修改 name / room） |
+| `DELETE` | `/api/v1/devices/{id}` | JWT | UC-11：解绑设备（级联删除其状态） |
 
 > 鉴权方式：在请求头添加 `Authorization: Bearer <jwt_token>`
 >

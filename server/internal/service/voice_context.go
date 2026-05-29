@@ -14,18 +14,25 @@ type DeviceContextItem = protocol.DeviceContext
 
 // BuildDeviceContext 根据家具 device_id 反查所属用户的所有设备 + 状态，
 // 用于会话建立时推送给 Worker，注入 LLM system prompt。
+//
+// 对未绑定（owner_id IS NULL）的设备返回空切片——让 LLM 看到设备列表为空，
+// 引导用户先去客户端绑定，避免误把别的用户设备暴露出来。
 func (s *DeviceService) BuildDeviceContext(ctx context.Context, deviceID string) ([]DeviceContextItem, error) {
 	device, err := s.GetDevice(ctx, deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("get device: %w", err)
 	}
+	if device.OwnerID == nil {
+		return []DeviceContextItem{}, nil
+	}
+	ownerID := *device.OwnerID
 
-	devices, err := s.ListDevicesByOwner(ctx, device.OwnerID)
+	devices, err := s.ListDevicesByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
 	}
 
-	states, err := s.ListDeviceStatesByOwner(ctx, device.OwnerID)
+	states, err := s.ListDeviceStatesByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("list states: %w", err)
 	}

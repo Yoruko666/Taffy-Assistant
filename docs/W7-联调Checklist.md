@@ -9,7 +9,7 @@
 
 ## 联调前置条件（W6 末必须就绪）
 
-- [ ] MySQL 8 / Redis 7 在本机或同网段可连，已执行 `001_init.sql` + `002_seed.sql`
+- [ ] MySQL 8 / Redis 7 在本机或同网段可连，已执行 `001_init.sql` + `002_seed.sql` + `003_device_binding.sql`
 - [ ] 模型权重已下载（`model/asr_server/models/`、`model/tts_server/models/zh_CN-huayan-medium.onnx`）
 - [ ] Worker `config.yaml` 或 `LLM_API_KEY` 环境变量已配大模型 Key
 - [ ] 各端口未被占用：`9100 / 9200 / 8090 / 8080 / 3306 / 6379`
@@ -149,8 +149,13 @@ go run ./cmd/server     # :8080
 | UC-01-01 | 启动 App → 注册新用户 | 进入主界面，本地存了 JWT |
 | UC-01-02 | 登录已有用户 | 同上 |
 | UC-01-03 | 查看设备列表 | 看到种子数据里的 N 台设备 |
-| UC-03-01 | 设备列表上点开/关 | 卡片 UI 即时翻转，DB 实际更新（用 mysql 客户端验证） |
-| UC-03-02 | 查看设备状态详情 | 显示 `power / brightness / temperature / mode` |
+| UC-03-01 | 点击右下角"添加设备"FAB → 选一台池设备 → 输入绑定码 888001 | Snackbar"绑定成功"，列表新增一张卡片，DB `devices.owner_id` 更新为当前用户 |
+| UC-03-02 | UC-03-01 后再次进入绑定页 | 该设备已不在池列表（waiting_bind 已清空） |
+| UC-03-03 | UC-03-01 输入错误绑定码 | Snackbar"绑定码错误，或该设备已被绑定"，卡片**未**新增 |
+| UC-03-04 | 设备卡片**长按** → 选"重命名" | 输入新名称保存，卡片副标题刷新；DB `devices.name` 更新 |
+| UC-03-05 | 设备卡片**长按** → 选"解绑设备" → 确认 | 卡片从列表消失，DB 中该 device 已删除（级联清 device_states） |
+| UC-04-01 | 设备列表上点开/关 | 卡片 UI 即时翻转，DB 实际更新（用 mysql 客户端验证） |
+| UC-04-02 | 查看设备状态详情 | 显示 `power / brightness / temperature / mode` |
 | UC-02-Android | App 内对小菲说话（**Stretch goal**，做不完不阻塞 M3） | 走 WS 上行 → 收 `llm_result` 显示 |
 
 **接口对照表**（已就绪，等客户端接入）
@@ -162,6 +167,10 @@ go run ./cmd/server     # :8080
 | 设备列表 | `GET` | `/api/v1/devices` | JWT |
 | 状态列表 | `GET` | `/api/v1/devices/states` | JWT |
 | 更新状态 | `PUT` | `/api/v1/devices/state` | JWT |
+| **可绑定列表** | `GET` | `/api/v1/devices/bindable?reveal=1` | JWT |
+| **绑定设备** | `POST` | `/api/v1/devices/bind` | JWT |
+| **重命名设备** | `PUT` | `/api/v1/devices/{id}` | JWT |
+| **解绑设备** | `DELETE` | `/api/v1/devices/{id}` | JWT |
 
 ---
 

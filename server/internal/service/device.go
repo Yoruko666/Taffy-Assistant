@@ -19,6 +19,10 @@ var ErrNotDeviceOwner = errors.New("not device owner")
 // ErrInvalidDeviceToken 设备 token 校验失败（不存在 / 不匹配 / 设备未注册）。
 var ErrInvalidDeviceToken = errors.New("invalid device token")
 
+// ErrInvalidBindCode 绑定码错误 / 设备已被绑定 / 设备不存在。
+// 三种场景统一为同一错误，避免暴露设备是否存在的信息（轻量防枚举）。
+var ErrInvalidBindCode = errors.New("invalid bind code or device already bound")
+
 // DeviceService 设备业务逻辑。
 type DeviceService struct {
 	deviceRepo *repository.DeviceRepo
@@ -111,13 +115,104 @@ func (s *DeviceService) UpdateDeviceState(ctx context.Context, userID int64, sta
 		}
 		return fmt.Errorf("get device: %w", err)
 	}
-	if d.OwnerID != userID {
+	if d.OwnerID == nil || *d.OwnerID != userID {
 		return ErrNotDeviceOwner
 	}
 	return s.stateRepo.Upsert(ctx, state)
 }
 
-// DeleteDevice 删除设备（级联删状态）。
+// ListBindable 列出待绑定池中的所有设备（owner_id IS NULL 且 status=waiting_bind）。
+// 演示期返回全部池设备；生产期可按"用户附近 / 同局域网"等维度收敛。
+func (s *DeviceService) ListBindable(ctx context.Context) ([]*model.Device, error) {
+	return s.deviceRepo.ListBindable(ctx)
+}
+
+// BindDevice 用绑定码把池设备绑定到指定用户：
+//   - device_id + bind_code 必须匹配；
+//   - 设备必须仍处于"未归属"状态（owner_id IS NULL）；
+//   - name 为空时回退为设备原名；room 允许为空。
+//
+// 返回更新后的设备实体。
+func (s *DeviceService) BindDevice(
+	ctx context.Context, userID int64, deviceID, bindCode, name, room string,
+) (*model.Device, error) {
+	if deviceID == "" || bindCode == "" {
+		return nil, ErrInvalidBindCode
+	}
+
+	// 查原记录拿默认 name，避免用户没填名字时把设备名改成空串。
+	original, err := s.deviceRepo.GetByID(ctx, deviceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInvalidBindCode
+		}
+		return nil, fmt.Errorf("get device: %w", err)
+	}
+	if name == "" {
+		name = original.Name
+	}
+
+	if err := s.deviceRepo.BindToOwner(ctx, deviceID, bindCode, userID, name, room); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInvalidBindCode
+		}
+		return nil, fmt.Errorf("bind device: %w", err)
+	}
+
+	// 重新查一遍返回最新状态。
+	bound, err := s.deviceRepo.GetByID(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("reload device after bind: %w", err)
+	}
+	return bound, nil
+}
+
+// RenameDevice 修改设备的展示名和房间，仅 owner 可改。
+func (s *DeviceService) RenameDevice(
+	ctx context.Context, userID int64, deviceID, name, room string,
+) error {
+	if deviceID == "" {
+		return ErrDeviceNotFound
+	}
+	d, err := s.deviceRepo.GetByID(ctx, deviceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrDeviceNotFound
+		}
+		return fmt.Errorf("get device: %w", err)
+	}
+	if d.OwnerID == nil || *d.OwnerID != userID {
+		return ErrNotDeviceOwner
+	}
+	if err := s.deviceRepo.Rename(ctx, deviceID, userID, name, room); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotDeviceOwner
+		}
+		return fmt.Errorf("rename device: %w", err)
+	}
+	return nil
+}
+
+// UnbindDevice 解绑设备 = 物理删除设备记录（级联清除 device_states / commands）。
+// 对应用户视角的"移除设备"。仅 owner 可解绑。
+func (s *DeviceService) UnbindDevice(ctx context.Context, userID int64, deviceID string) error {
+	if deviceID == "" {
+		return ErrDeviceNotFound
+	}
+	d, err := s.deviceRepo.GetByID(ctx, deviceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrDeviceNotFound
+		}
+		return fmt.Errorf("get device: %w", err)
+	}
+	if d.OwnerID == nil || *d.OwnerID != userID {
+		return ErrNotDeviceOwner
+	}
+	return s.deviceRepo.Delete(ctx, deviceID)
+}
+
+// DeleteDevice 删除设备（级联删状态）。无权限校验，仅供运维 / 测试使用。
 func (s *DeviceService) DeleteDevice(ctx context.Context, deviceID string) error {
 	return s.deviceRepo.Delete(ctx, deviceID)
 }

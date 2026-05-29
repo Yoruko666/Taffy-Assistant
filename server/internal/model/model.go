@@ -38,14 +38,19 @@ const (
 )
 
 // Device 对应 devices 表。
+//
+// OwnerID 为指针类型：NULL 表示该设备处于"待绑定池"，尚未绑定到任何用户；
+// 非 NULL 时即归属用户。BindCode 仅在 status=waiting_bind 期间有值，
+// 用户在客户端"添加设备"页输入此 6 位短码完成绑定。
 type Device struct {
 	DeviceID  string       `db:"device_id"  json:"device_id"`
-	OwnerID   int64        `db:"owner_id"   json:"owner_id"`
+	OwnerID   *int64       `db:"owner_id"   json:"owner_id,omitempty"`
 	Type      DeviceType   `db:"type"       json:"type"`
 	Name      string       `db:"name"       json:"name"`
 	Room      string       `db:"room"       json:"room"`
 	Status    DeviceStatus `db:"status"     json:"status"`
 	Token     string       `db:"token"      json:"-"`
+	BindCode  string       `db:"bind_code"  json:"-"`
 	LastSeen  *time.Time   `db:"last_seen"  json:"last_seen,omitempty"`
 	CreatedAt time.Time    `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time    `db:"updated_at" json:"updated_at"`

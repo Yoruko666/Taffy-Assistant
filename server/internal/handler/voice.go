@@ -118,9 +118,9 @@ func (h *VoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vs := newVoiceSession(h.convSvc, log)
-	if device != nil {
+	if device != nil && device.OwnerID != nil {
 		startCtx, startCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		vs.start(startCtx, device.OwnerID, deviceID)
+		vs.start(startCtx, *device.OwnerID, deviceID)
 		startCancel()
 	}
 	defer vs.end()

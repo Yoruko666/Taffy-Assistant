@@ -3,11 +3,20 @@ package com.taffy.client.data
 /** 设备元信息（来自 GET /api/v1/devices）。*/
 data class Device(
     val deviceId: String,
-    val ownerId: Long,
+    val ownerId: Long?,    // 池中设备 owner_id 为 null
     val type: String,     // SPEAKER / LIGHT / AIRCON / CURTAIN / SOCKET
     val name: String,
     val room: String,
-    val status: String,   // online / offline
+    val status: String,   // online / offline / waiting_bind
+)
+
+/** 待绑定池中的一台设备（GET /api/v1/devices/bindable）。*/
+data class BindableDevice(
+    val deviceId: String,
+    val type: String,
+    val name: String,
+    /** 仅当请求带 ?reveal=1 时有值，演示期方便老师评审。*/
+    val bindCode: String? = null,
 )
 
 /**

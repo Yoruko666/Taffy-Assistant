@@ -118,6 +118,60 @@ class DeviceListViewModel(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    /** 重命名设备（修改 name / room）。成功后局部刷新该卡片，避免整体 reload 抖动。*/
+    fun renameDevice(deviceId: String, name: String, room: String) {
+        if (name.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "名称不能为空") }
+            return
+        }
+        _uiState.update { s -> s.copy(pendingDeviceIds = s.pendingDeviceIds + deviceId) }
+        viewModelScope.launch {
+            val res = apiClient.renameDevice(deviceId, name, room)
+            when (res) {
+                is ApiResult.Success -> _uiState.update { s ->
+                    s.copy(
+                        pendingDeviceIds = s.pendingDeviceIds - deviceId,
+                        cards = s.cards.map { c ->
+                            if (c.device.deviceId == deviceId)
+                                c.copy(device = c.device.copy(name = name, room = room))
+                            else c
+                        },
+                    )
+                }
+                is ApiResult.Failure -> _uiState.update { s ->
+                    s.copy(
+                        pendingDeviceIds = s.pendingDeviceIds - deviceId,
+                        errorMessage = res.message,
+                        unauthorized = res.httpCode == 401 || s.unauthorized,
+                    )
+                }
+            }
+        }
+    }
+
+    /** 解绑设备：成功后从列表移除。*/
+    fun unbindDevice(deviceId: String) {
+        _uiState.update { s -> s.copy(pendingDeviceIds = s.pendingDeviceIds + deviceId) }
+        viewModelScope.launch {
+            val res = apiClient.unbindDevice(deviceId)
+            when (res) {
+                is ApiResult.Success -> _uiState.update { s ->
+                    s.copy(
+                        pendingDeviceIds = s.pendingDeviceIds - deviceId,
+                        cards = s.cards.filterNot { it.device.deviceId == deviceId },
+                    )
+                }
+                is ApiResult.Failure -> _uiState.update { s ->
+                    s.copy(
+                        pendingDeviceIds = s.pendingDeviceIds - deviceId,
+                        errorMessage = res.message,
+                        unauthorized = res.httpCode == 401 || s.unauthorized,
+                    )
+                }
+            }
+        }
+    }
+
     private fun optimistic(card: DeviceCard, power: Boolean): DeviceCard {
         val newState = card.state?.copy(power = power)
             ?: DeviceState(deviceId = card.device.deviceId, power = power)

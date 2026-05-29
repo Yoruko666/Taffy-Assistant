@@ -184,6 +184,12 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 		mux.HandleFunc("/api/v1/devices/states", d.jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
 		mux.HandleFunc("/api/v1/devices/state", methodOnly(http.MethodPut, d.jwtMW.RequireAuth(deviceHandler.UpdateDeviceState)))
 		mux.HandleFunc("/api/v1/devices/{deviceID}/state", d.jwtMW.RequireAuth(deviceHandler.GetDeviceState))
+
+		// UC-03 设备绑定 / 解绑 / 重命名
+		mux.HandleFunc("GET /api/v1/devices/bindable", d.jwtMW.RequireAuth(deviceHandler.ListBindableDevices))
+		mux.HandleFunc("POST /api/v1/devices/bind", d.jwtMW.RequireAuth(deviceHandler.BindDevice))
+		mux.HandleFunc("PUT /api/v1/devices/{deviceID}", d.jwtMW.RequireAuth(deviceHandler.RenameDevice))
+		mux.HandleFunc("DELETE /api/v1/devices/{deviceID}", d.jwtMW.RequireAuth(deviceHandler.UnbindDevice))
 	}
 
 	return mux

@@ -1,5 +1,7 @@
 package com.taffy.client.ui.devices
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,12 +38,15 @@ import com.taffy.client.data.DeviceCard as DeviceCardModel
 /**
  * 单设备卡片：图标 + 名称 + 状态描述 + 开关。
  * pending=true 时右侧显示进度圈；离线时背景变灰、开关禁用。
+ * 卡片支持**长按**触发 [onLongPress]——上层用来弹"重命名/解绑"菜单。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DeviceCardRow(
     card: DeviceCardModel,
     pending: Boolean,
     onTogglePower: () -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     val containerColor =
         if (card.online) MaterialTheme.colorScheme.surface
@@ -49,7 +54,12 @@ fun DeviceCardRow(
 
     Card(
         colors = CardDefaults.cardColors(containerColor = containerColor),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongPress,
+            ),
     ) {
         Row(
             modifier = Modifier

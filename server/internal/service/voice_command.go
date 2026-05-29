@@ -50,7 +50,10 @@ func (s *DeviceService) ExecuteControlDevice(ctx context.Context, raw json.RawMe
 		return DeviceCommandResult{Success: false, Message: errMsg}
 	}
 
-	if err := s.UpdateDeviceState(cctx, device.OwnerID, state); err != nil {
+	if device.OwnerID == nil {
+		return DeviceCommandResult{Success: false, Message: "该设备尚未绑定到任何用户，请先在 App 中绑定"}
+	}
+	if err := s.UpdateDeviceState(cctx, *device.OwnerID, state); err != nil {
 		return DeviceCommandResult{Success: false, Message: "状态更新失败: " + err.Error()}
 	}
 
