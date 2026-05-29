@@ -58,6 +58,41 @@ func (r *UserRepo) GetByPhone(ctx context.Context, phone string) (*model.User, e
 	return u, nil
 }
 
+// Update 更新用户昵称、邮箱、头像。
+func (r *UserRepo) Update(ctx context.Context, id int64, nickname, email, avatarURL string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET nickname = ?, email = ?, avatar_url = ? WHERE user_id = ?`,
+		nickname, email, avatarURL, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update user: %w", err)
+	}
+	return nil
+}
+
+// UpdatePassword 更新用户密码哈希。
+func (r *UserRepo) UpdatePassword(ctx context.Context, id int64, hash string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = ? WHERE user_id = ?`,
+		hash, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	return nil
+}
+
+// Delete 删除用户。
+func (r *UserRepo) Delete(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM users WHERE user_id = ?`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
+}
+
 // GetByEmail 按邮箱查询。
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	u := &model.User{}

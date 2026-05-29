@@ -168,6 +168,7 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 	mux := http.NewServeMux()
 
 	authHandler := handler.NewAuthHandler(d.userSvc, d.jwtMW, cfg)
+	userHandler := handler.NewUserHandler(d.userSvc)
 	deviceHandler := handler.NewDeviceHandler(d.deviceSvc, d.hub)
 	voiceHandler := handler.NewVoiceHandler(cfg, d.deviceSvc, d.convSvc, d.hub)
 	realtimeHandler := handler.NewRealtimeHandler(d.jwtMW, d.hub)
@@ -199,6 +200,12 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 		mux.HandleFunc("POST /api/v1/devices/bind", d.jwtMW.RequireAuth(deviceHandler.BindDevice))
 		mux.HandleFunc("PUT /api/v1/devices/{deviceID}", d.jwtMW.RequireAuth(deviceHandler.RenameDevice))
 		mux.HandleFunc("DELETE /api/v1/devices/{deviceID}", d.jwtMW.RequireAuth(deviceHandler.UnbindDevice))
+
+		// 用户信息
+		mux.HandleFunc("GET /api/v1/users/me", d.jwtMW.RequireAuth(userHandler.GetProfile))
+		mux.HandleFunc("PATCH /api/v1/users/me", d.jwtMW.RequireAuth(userHandler.UpdateProfile))
+		mux.HandleFunc("POST /api/v1/users/me/password", d.jwtMW.RequireAuth(userHandler.ChangePassword))
+		mux.HandleFunc("DELETE /api/v1/users/me", d.jwtMW.RequireAuth(userHandler.DeleteProfile))
 	}
 
 	return mux
