@@ -57,6 +57,9 @@
 | `/v1/voice` | **WS** | 家具端 | 核心：音频上行 / 识别文本与回复下行（透传到 Worker）/ `device_command` 拦截执行 / `device_info` 上下文推送 / 对话历史落库 |
 | `/api/v1/auth/register` | HTTPS | 客户端 App | 用户注册，返回 JWT |
 | `/api/v1/auth/login` | HTTPS | 客户端 App | 用户登录，返回 JWT |
+| `/api/v1/auth/logout` | HTTPS | 客户端 App | 用户登出（POST，JWT 鉴权，Redis 黑名单） |
+| `/api/v1/users/me` | HTTPS | 客户端 App | 个人信息查询（GET）/ 修改昵称邮箱头像（PATCH）/ 注销（DELETE），JWT 鉴权 |
+| `/api/v1/users/me/password` | HTTPS | 客户端 App | 修改密码（POST，需旧密码，JWT 鉴权） |
 | `/api/v1/devices` | HTTPS | 客户端 App | 获取当前用户所有设备（JWT 鉴权） |
 | `/api/v1/devices/states` | HTTPS | 客户端 App | 获取当前用户所有设备状态（JWT 鉴权） |
 | `/api/v1/devices/state` | HTTPS | 客户端 App | 更新设备状态（PUT，JWT 鉴权） |
@@ -363,6 +366,8 @@ MQTT bridge 实现在 [`internal/mqtt/bridge.go`](internal/mqtt/bridge.go)：
 - [x] 标准化 REST 错误码 `{error, message}`
 - [x] UC-03 设备绑定 + UC-11 解绑 + 重命名（待绑定池模式 + bind_code）
 - [x] UC-10 客户端实时状态推送 Hub（`/ws` 通道，per-user 房间，控制后自动 broadcast）
+- [x] `POST /api/v1/auth/logout`（JWT 黑名单注销）
+- [x] UC-12/UC-13 用户信息接口（`GET/PATCH /api/v1/users/me`、`POST /users/me/password`、`DELETE /users/me`）
 - [ ] 对话历史查询 API（`/api/v1/conversations/*`）—— 已确定**不做**：本系统对话本质是命令通道，UI 只显示设备状态变更而非聊天历史
 - [ ] 健康巡检：定时打 worker `/v1/health`，掉线自动降级
 - [ ] 场景管理（`/api/v1/scenes/*` + `activate_scene` tool 落地）
