@@ -171,7 +171,6 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 	deviceHandler := handler.NewDeviceHandler(d.deviceSvc, d.hub)
 	voiceHandler := handler.NewVoiceHandler(cfg, d.deviceSvc, d.convSvc, d.hub)
 	realtimeHandler := handler.NewRealtimeHandler(d.jwtMW, d.hub)
-	convHandler := handler.NewConversationHandler(d.convSvc)
 
 	var mqttProbe func() string
 	if d.mqtt != nil {
@@ -198,10 +197,6 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 		mux.HandleFunc("POST /api/v1/devices/bind", d.jwtMW.RequireAuth(deviceHandler.BindDevice))
 		mux.HandleFunc("PUT /api/v1/devices/{deviceID}", d.jwtMW.RequireAuth(deviceHandler.RenameDevice))
 		mux.HandleFunc("DELETE /api/v1/devices/{deviceID}", d.jwtMW.RequireAuth(deviceHandler.UnbindDevice))
-
-		// 对话历史
-		mux.HandleFunc("GET /api/v1/conversations", d.jwtMW.RequireAuth(convHandler.ListConversations))
-		mux.HandleFunc("GET /api/v1/conversations/{id}/messages", d.jwtMW.RequireAuth(convHandler.GetMessages))
 	}
 
 	return mux

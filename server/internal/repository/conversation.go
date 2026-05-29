@@ -31,42 +31,6 @@ func (r *ConversationRepo) Create(ctx context.Context, c *model.Conversation) (i
 	return id, nil
 }
 
-// ListByUser 查询某用户的所有会话，按 started_at 倒序。
-func (r *ConversationRepo) ListByUser(ctx context.Context, userID int64) ([]*model.Conversation, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT conversation_id, user_id, device_id, started_at, ended_at
-		 FROM conversations WHERE user_id = ? ORDER BY started_at DESC LIMIT 100`, userID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list conversations: %w", err)
-	}
-	defer rows.Close()
-
-	var convs []*model.Conversation
-	for rows.Next() {
-		c := &model.Conversation{}
-		if err := rows.Scan(&c.ConversationID, &c.UserID, &c.DeviceID,
-			&c.StartedAt, &c.EndedAt); err != nil {
-			return nil, fmt.Errorf("scan conversation: %w", err)
-		}
-		convs = append(convs, c)
-	}
-	return convs, rows.Err()
-}
-
-// GetByID 按 ID 查询单条会话。
-func (r *ConversationRepo) GetByID(ctx context.Context, id int64) (*model.Conversation, error) {
-	c := &model.Conversation{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT conversation_id, user_id, device_id, started_at, ended_at
-		 FROM conversations WHERE conversation_id = ?`, id,
-	).Scan(&c.ConversationID, &c.UserID, &c.DeviceID, &c.StartedAt, &c.EndedAt)
-	if err != nil {
-		return nil, fmt.Errorf("get conversation: %w", err)
-	}
-	return c, nil
-}
-
 // EndByID 结束会话（设置 ended_at）。
 func (r *ConversationRepo) EndByID(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx,
