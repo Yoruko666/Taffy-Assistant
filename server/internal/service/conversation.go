@@ -120,3 +120,64 @@ func (s *ConversationService) MarkCommandResult(ctx context.Context, commandID i
 	}
 	return s.cmdRepo.UpdateResult(cctx, commandID, res)
 }
+
+// GetConversation 按 ID 查询单场对话。调用方负责校验 user_id 归属。
+func (s *ConversationService) GetConversation(ctx context.Context, id int64) (*model.Conversation, error) {
+	if !s.Enabled() {
+		return nil, ErrConversationDisabled
+	}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return s.convRepo.GetByID(cctx, id)
+}
+
+// ListConversations 返回某用户最近的对话列表，每条带最新一条消息预览。
+func (s *ConversationService) ListConversations(ctx context.Context, userID int64) ([]ConversationWithPreview, error) {
+	if !s.Enabled() {
+		return nil, ErrConversationDisabled
+	}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	convs, err := s.convRepo.ListByUser(cctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
+	}
+
+	out := make([]ConversationWithPreview, 0, len(convs))
+	for _, c := range convs {
+		item := ConversationWithPreview{
+			ConversationID: c.ConversationID,
+			DeviceID:       c.DeviceID,
+			StartedAt:      c.StartedAt,
+			EndedAt:        c.EndedAt,
+		}
+		msgs, _ := s.msgRepo.ListByConversation(cctx, c.ConversationID)
+		if len(msgs) > 0 {
+			item.MessageCount = len(msgs)
+			item.Preview = msgs[len(msgs)-1].Content
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// GetMessages 返回某场对话的所有消息。
+func (s *ConversationService) GetMessages(ctx context.Context, conversationID int64) ([]*model.Message, error) {
+	if !s.Enabled() {
+		return nil, ErrConversationDisabled
+	}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return s.msgRepo.ListByConversation(cctx, conversationID)
+}
+
+// ConversationWithPreview 对话列表项，附带最后一条消息预览。
+type ConversationWithPreview struct {
+	ConversationID int64      `json:"conversation_id"`
+	DeviceID       *string    `json:"device_id,omitempty"`
+	StartedAt      time.Time  `json:"started_at"`
+	EndedAt        *time.Time `json:"ended_at,omitempty"`
+	MessageCount   int        `json:"message_count"`
+	Preview        string     `json:"preview"`
+}
