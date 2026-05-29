@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"taffy-server/internal/config"
 	"taffy-server/internal/middleware"
@@ -141,6 +142,27 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// Logout POST /api/v1/auth/logout
+// 将当前 JWT 加入 Redis 黑名单，后续请求将被拒绝。
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		writeAPIError(w, http.StatusBadRequest, "invalid_token", "invalid authorization format")
+		return
+	}
+
+	ttl := h.cfg.JWT.AccessTTLDuration()
+	if err := h.jwtMW.RevokeToken(parts[1], ttl); err != nil {
+		slog.Error("revoke token failed", "err", err)
+		writeAPIError(w, http.StatusInternalServerError, codeInternal, "internal error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // writeAPIError 写入标准 JSON 错误响应：{"error":"<code>","message":"<text>"}。

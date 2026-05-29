@@ -186,6 +186,8 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 	mux.HandleFunc("/api/v1/auth/register", postOnly(authHandler.Register))
 	mux.HandleFunc("/api/v1/auth/login", postOnly(authHandler.Login))
 
+	mux.HandleFunc("POST /api/v1/auth/logout", d.jwtMW.RequireAuth(authHandler.Logout))
+
 	if d.db != nil {
 		mux.HandleFunc("/api/v1/devices", d.jwtMW.RequireAuth(deviceHandler.ListDevices))
 		mux.HandleFunc("/api/v1/devices/states", d.jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
