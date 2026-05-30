@@ -169,6 +169,16 @@ func (h *SceneHandler) TriggerScene(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scene, err := h.sceneSvc.GetScene(r.Context(), id)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "scene_not_found", "scene not found")
+		return
+	}
+	if scene.UserID != userID {
+		writeAPIError(w, http.StatusForbidden, "not_owner", "not scene owner")
+		return
+	}
+
 	results, err := h.sceneSvc.Trigger(r.Context(), id, h.deviceSvc.ExecuteControlDevice)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "trigger_failed", err.Error())
