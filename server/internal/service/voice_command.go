@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -87,9 +88,40 @@ func (s *DeviceService) publishCommandBestEffort(ctx context.Context, p protocol
 	})
 }
 
-// ExecuteActivateScene 执行场景激活（暂未实现）。
-func (s *DeviceService) ExecuteActivateScene(_ context.Context, _ json.RawMessage) DeviceCommandResult {
-	return DeviceCommandResult{Success: false, Message: "场景激活功能暂未实现"}
+// ExecuteActivateScene 执行场景激活：解析 scene_id → 遍历命令列表 → 逐条调用 ExecuteControlDevice。
+func (s *DeviceService) ExecuteActivateScene(ctx context.Context, raw json.RawMessage) DeviceCommandResult {
+	if s.sceneSvc == nil {
+		return DeviceCommandResult{Success: false, Message: "场景功能未启用"}
+	}
+
+	var params struct {
+		SceneID int64 `json:"scene_id"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil || params.SceneID <= 0 {
+		return DeviceCommandResult{Success: false, Message: "缺少有效的 scene_id 参数"}
+	}
+
+	results, err := s.sceneSvc.Trigger(ctx, params.SceneID, s.ExecuteControlDevice)
+	if err != nil {
+		return DeviceCommandResult{Success: false, Message: "场景执行失败: " + err.Error()}
+	}
+
+	failCount := 0
+	for _, r := range results {
+		if !r.Success {
+			failCount++
+		}
+	}
+	if failCount > 0 {
+		return DeviceCommandResult{
+			Success: true,
+			Message: fmt.Sprintf("场景执行完成，%d/%d 条指令失败", failCount, len(results)),
+		}
+	}
+	return DeviceCommandResult{
+		Success: true,
+		Message: fmt.Sprintf("场景执行完成，全部 %d 条指令成功", len(results)),
+	}
 }
 
 // applyAction 把 action 反映到 state 上。

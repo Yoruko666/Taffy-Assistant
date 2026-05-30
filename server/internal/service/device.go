@@ -30,6 +30,9 @@ type DeviceService struct {
 
 	// mqttPub 非 nil 时 ExecuteControlDevice 会向 taffy/device/{id}/cmd 下发指令。
 	mqttPub MQTTPublisher
+
+	// sceneSvc 非 nil 时 ExecuteActivateScene 可用。
+	sceneSvc *SceneService
 }
 
 // MQTTPublisher 把控制指令下发到物理 / 模拟设备的最小接口，由 mqtt.Bridge 实现。
@@ -51,6 +54,11 @@ func NewDeviceService(deviceRepo *repository.DeviceRepo, stateRepo *repository.D
 }
 
 // AttachMQTT 注入 mqtt publisher，让 ExecuteControlDevice 同步下发到物理设备。
+// AttachSceneService 注入场景服务，启用 ExecuteActivateScene。
+func (s *DeviceService) AttachSceneService(svc *SceneService) {
+	s.sceneSvc = svc
+}
+
 func (s *DeviceService) AttachMQTT(p MQTTPublisher) {
 	s.mqttPub = p
 }

@@ -91,6 +91,7 @@ type deps struct {
 	userSvc   *service.UserService
 	deviceSvc *service.DeviceService
 	convSvc   *service.ConversationService
+	sceneSvc  *service.SceneService
 }
 
 func (d *deps) Close() {
@@ -133,10 +134,13 @@ func buildDeps(cfg *config.AppConfig) *deps {
 		convRepo := repository.NewConversationRepo(d.db)
 		msgRepo := repository.NewMessageRepo(d.db)
 		cmdRepo := repository.NewCommandRepo(d.db)
+		sceneRepo := repository.NewSceneRepo(d.db)
 
 		d.userSvc = service.NewUserService(userRepo)
 		d.deviceSvc = service.NewDeviceService(deviceRepo, stateRepo)
 		d.convSvc = service.NewConversationService(convRepo, msgRepo, cmdRepo)
+		d.sceneSvc = service.NewSceneService(sceneRepo)
+		d.deviceSvc.AttachSceneService(d.sceneSvc)
 	}
 
 	if cfg.MQTT.Broker != "" && d.deviceSvc != nil {
@@ -170,6 +174,7 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 	authHandler := handler.NewAuthHandler(d.userSvc, d.jwtMW, cfg)
 	userHandler := handler.NewUserHandler(d.userSvc)
 	deviceHandler := handler.NewDeviceHandler(d.deviceSvc, d.hub)
+	sceneHandler := handler.NewSceneHandler(d.sceneSvc, d.deviceSvc)
 	voiceHandler := handler.NewVoiceHandler(cfg, d.deviceSvc, d.convSvc, d.hub)
 	realtimeHandler := handler.NewRealtimeHandler(d.jwtMW, d.hub)
 
@@ -206,6 +211,14 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 		mux.HandleFunc("PATCH /api/v1/users/me", d.jwtMW.RequireAuth(userHandler.UpdateProfile))
 		mux.HandleFunc("POST /api/v1/users/me/password", d.jwtMW.RequireAuth(userHandler.ChangePassword))
 		mux.HandleFunc("DELETE /api/v1/users/me", d.jwtMW.RequireAuth(userHandler.DeleteProfile))
+
+		// 场景管理
+		mux.HandleFunc("GET /api/v1/scenes", d.jwtMW.RequireAuth(sceneHandler.ListScenes))
+		mux.HandleFunc("POST /api/v1/scenes", d.jwtMW.RequireAuth(sceneHandler.CreateScene))
+		mux.HandleFunc("GET /api/v1/scenes/{id}", d.jwtMW.RequireAuth(sceneHandler.GetScene))
+		mux.HandleFunc("PUT /api/v1/scenes/{id}", d.jwtMW.RequireAuth(sceneHandler.UpdateScene))
+		mux.HandleFunc("DELETE /api/v1/scenes/{id}", d.jwtMW.RequireAuth(sceneHandler.DeleteScene))
+		mux.HandleFunc("POST /api/v1/scenes/{id}/trigger", d.jwtMW.RequireAuth(sceneHandler.TriggerScene))
 	}
 
 	return mux

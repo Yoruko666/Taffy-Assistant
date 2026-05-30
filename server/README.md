@@ -68,7 +68,8 @@
 | `/api/v1/devices/bind` | HTTPS | 客户端 App | UC-03：绑定池设备到当前用户（POST，JWT 鉴权） |
 | `/api/v1/devices/{id}` | HTTPS | 客户端 App | 重命名设备（PUT）/ 解绑设备（DELETE），JWT 鉴权 |
 | `/ws` | WSS | 客户端 App | UC-10：实时状态推送通道（query 携带 JWT；仅下行 `device_state_changed`，控制成功后由 server 主动 broadcast） |
-| `/api/v1/scenes/*` | HTTPS | 客户端 App | 场景管理（计划中） |
+| `/api/v1/scenes` | HTTPS | 客户端 App | 场景 CRUD（GET列表/POST创建）+ 单场景 GET/PUT/DELETE（JWT 鉴权） |
+| `/api/v1/scenes/{id}/trigger` | HTTPS | 客户端 App | 一键触发场景（POST，JWT 鉴权），逐条执行设备指令 |
 | `/api/v1/conversations/*` | HTTPS | 客户端 App | 对话历史查询（已被产品形态淘汰：详见软件设计文档 v1.8） |
 | `/v1/health` | HTTP | 运维 / 客户端 | 健康检查（含 worker / db / redis / mqtt 四项状态） |
 
@@ -370,5 +371,5 @@ MQTT bridge 实现在 [`internal/mqtt/bridge.go`](internal/mqtt/bridge.go)：
 - [x] UC-12/UC-13 用户信息接口（`GET/PATCH /api/v1/users/me`、`POST /users/me/password`、`DELETE /users/me`）
 - [ ] 对话历史查询 API（`/api/v1/conversations/*`）—— 已确定**不做**：本系统对话本质是命令通道，UI 只显示设备状态变更而非聊天历史
 - [ ] 健康巡检：定时打 worker `/v1/health`，掉线自动降级
-- [ ] 场景管理（`/api/v1/scenes/*` + `activate_scene` tool 落地）
+- [x] 场景管理（`/api/v1/scenes/*` CRUD + trigger + `activate_scene` tool 落地）
 - [ ] 限流 / 审计日志

@@ -180,6 +180,18 @@ func (r *SceneRepo) ListByUser(ctx context.Context, userID int64) ([]*model.Scen
 	return scenes, rows.Err()
 }
 
+// Update 更新场景名称与指令列表。
+func (r *SceneRepo) Update(ctx context.Context, s *model.Scene) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE scenes SET name = ?, command_list = ? WHERE scene_id = ?`,
+		s.Name, s.CommandList, s.SceneID,
+	)
+	if err != nil {
+		return fmt.Errorf("update scene: %w", err)
+	}
+	return nil
+}
+
 // Delete 删除场景。
 func (r *SceneRepo) Delete(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx,

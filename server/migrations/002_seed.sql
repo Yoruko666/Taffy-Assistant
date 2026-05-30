@@ -43,7 +43,7 @@ INSERT INTO device_states (device_id, power, brightness, temperature, mode, posi
 ('aircon-002',  FALSE, NULL, 24,    'auto', NULL),
 ('dev2',        TRUE,  NULL, NULL,  NULL, NULL);
 
--- 场景
+-- 场景（command_list 每项字段平铺，与 control_device params 结构一致）
 INSERT INTO scenes (user_id, name, command_list) VALUES
-(1, '回家模式', '[{"device_id":"light-001","action":"turn_on","params":{"brightness":80}},{"device_id":"aircon-001","action":"turn_on","params":{"temperature":26,"mode":"cool"}},{"device_id":"curtain-001","action":"set_position","params":{"position":70}}]'),
-(1, '睡眠模式', '[{"device_id":"light-001","action":"turn_off"},{"device_id":"light-002","action":"turn_off"},{"device_id":"curtain-001","action":"set_position","params":{"position":0}},{"device_id":"aircon-001","action":"set_temp","params":{"temperature":25,"mode":"auto"}}]');
+(1, '回家模式', '[{"device_id":"light-001","action":"turn_on","brightness":80},{"device_id":"aircon-001","action":"turn_on","temperature":26,"mode":"cool"},{"device_id":"curtain-001","action":"set_position","position":70}]'),
+(1, '睡眠模式', '[{"device_id":"light-001","action":"turn_off"},{"device_id":"light-002","action":"turn_off"},{"device_id":"curtain-001","action":"set_position","position":0},{"device_id":"aircon-001","action":"set_temperature","temperature":25,"mode":"auto"}]');
