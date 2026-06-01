@@ -110,9 +110,9 @@ asr:
   ws_url: "ws://127.0.0.1:9100/v1/asr/stream"
 
 llm:
-  url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
   api_key: "sk-your-api-key-here"   # 也可用 $env:LLM_API_KEY 覆盖
-  model: "GLM-4-Flash-250414"
+  model: "qwen-turbo"               # 阿里百炼 qwen-turbo / qwen-plus / qwen-max
   system_prompt: "你是「小菲」，一个智能家居语音助手。请用中文简短回答用户的问题。"
   timeout: 30
 
@@ -127,9 +127,22 @@ tts:
 |---|---|---|
 | ASR WS 地址 | `asr.ws_url` | `ASR_WS_URL` |
 | LLM API Key | `llm.api_key` | `LLM_API_KEY` |
+| LLM API 地址 | `llm.url` | `LLM_URL` |
+| LLM 模型名 | `llm.model` | `LLM_MODEL` |
 | TTS HTTP 地址 | `tts.url` | `TTS_URL` |
 | Worker 监听端口 | — | `WORKER_PORT`（默认 `8090`） |
 | 配置文件路径 | — | `CONFIG_PATH`（默认 `config.yaml`） |
+
+### 切换 LLM / 模型
+
+无需改 `config.yaml`，启动时设环境变量即可。例如从默认的 qwen-turbo 切换到另一个 Key + 模型：
+
+```powershell
+$env:LLM_API_KEY = "sk-新key"
+$env:LLM_URL = "https://新端点/compatible-mode/v1/chat/completions"
+$env:LLM_MODEL = "qwen3.6-plus"
+.\worker.exe
+```
 
 未配置 LLM 时：`asr_final` 不会触发 LLM，worker 只完成 ASR 透传。
 未配置 ASR 时：`/v1/orchestrate` 直接回 `error`。
