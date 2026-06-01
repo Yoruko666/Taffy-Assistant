@@ -97,6 +97,10 @@ server/mem.out
 server/cmd/server/server
 server/cmd/server/server.exe
 
+# Go 编译产物
+worker/worker.exe
+server/server.exe
+
 # ============================================================
 #   Android / Kotlin（client/）
 # ============================================================
