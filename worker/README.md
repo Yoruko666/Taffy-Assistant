@@ -219,6 +219,8 @@ ASR 回 `asr_final` 但文本为空（环境噪音误触）时，worker 直接�
 - [x] Server↔Worker WS 透传 + LLM 调用
 - [x] OpenAI Function Calling（Tool Call）两轮调用
 - [x] TTS 异步合成 + `tts_audio` 下发
+- [x] 模型服务部署（ASR FunASR / TTS Piper）+ 安装文档（吴承凯）
+- [x] 阿里百炼 LLM 接入 + 多 Key 切换 + 环境变量覆盖（吴承凯）
 - [ ] LLM 流式输出（`stream=true`，逐 token 推 `llm_partial`）
 - [ ] 多轮对话上下文（在 worker 内维护 `session_id` → 历史消息，目前每条 `asr_final` 是独立轮）
 - [ ] 健康巡检：定时打 ASR / TTS `/v1/health`，掉线自动 `error: model_unavailable`
