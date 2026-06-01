@@ -34,7 +34,7 @@ type AppConfig struct {
 }
 
 // setDefaults 用合理默认值填充零值字段。
-// APIKey / ASR_WS_URL / TTS_URL 支持环境变量覆盖。
+// APIKey / LLM_URL / LLM_MODEL / ASR_WS_URL / TTS_URL 支持环境变量覆盖。
 func (c *AppConfig) setDefaults() {
 	if c.ASR.WSURL == "" {
 		c.ASR.WSURL = "ws://127.0.0.1:9100/v1/asr/stream"
@@ -51,6 +51,12 @@ func (c *AppConfig) setDefaults() {
 	}
 	if envKey := os.Getenv("LLM_API_KEY"); envKey != "" {
 		c.LLM.APIKey = envKey
+	}
+	if v := os.Getenv("LLM_URL"); v != "" {
+		c.LLM.URL = v
+	}
+	if v := os.Getenv("LLM_MODEL"); v != "" {
+		c.LLM.Model = v
 	}
 
 	if v := os.Getenv("TTS_URL"); v != "" {
