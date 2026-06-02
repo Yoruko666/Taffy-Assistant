@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -23,8 +24,8 @@ type llmRequest struct {
 	Tools    []map[string]any // nil 时不带 tools 字段
 }
 
-// postLLM 发起一次 OpenAI 兼容的 Chat Completions 调用。
-func (h *OrchestrateHandler) postLLM(req llmRequest) (*LLMResponse, error) {
+// postLLM 向指定 provider 发起一次 OpenAI 兼容的 Chat Completions 调用。
+func (h *OrchestrateHandler) postLLM(provider LLMProvider, req llmRequest) (*LLMResponse, error) {
 	cfg := &h.cfg.LLM
 
 	body := map[string]any{
@@ -44,12 +45,12 @@ func (h *OrchestrateHandler) postLLM(req llmRequest) (*LLMResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeout)*time.Second)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(bodyJSON))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.URL, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, fmt.Errorf("build llm req: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	httpReq.Header.Set("Authorization", "Bearer "+provider.APIKey)
 
 	resp, err := llmHTTPClient.Do(httpReq)
 	if err != nil {
@@ -67,12 +68,40 @@ func (h *OrchestrateHandler) postLLM(req llmRequest) (*LLMResponse, error) {
 	return &result, nil
 }
 
+// postLLMWithFallback 依次尝试所有 provider，返回第一个成功的结果。
+func (h *OrchestrateHandler) postLLMWithFallback(req llmRequest) (*LLMResponse, error) {
+	cfg := &h.cfg.LLM
+	if len(cfg.Providers) == 0 {
+		return nil, errors.New("no llm provider configured")
+	}
+
+	var lastErr error
+	for i, p := range cfg.Providers {
+		// 使用 provider 的 model 覆盖 req.Model（如果 req 未指定则以 provider 为准）
+		reqCopy := req
+		if reqCopy.Model == "" {
+			reqCopy.Model = p.Model
+		}
+
+		resp, err := h.postLLM(p, reqCopy)
+		if err == nil {
+			if i > 0 {
+				slog.Info("llm fallback succeeded", "provider_index", i, "model", p.Model)
+			}
+			return resp, nil
+		}
+		slog.Warn("llm provider failed, trying next", "index", i, "model", p.Model, "err", err)
+		lastErr = err
+	}
+	return nil, fmt.Errorf("all llm providers failed: %w", lastErr)
+}
+
 // callLLMWithTools 首次调用 LLM，带 tools 参数，让 LLM 决定是否触发 control_device。
+// 自动按 providers 顺序尝试主备切换。
 func (h *OrchestrateHandler) callLLMWithTools(text string, devices []DeviceContext, scenes []SceneContext) (*LLMResponse, error) {
 	cfg := &h.cfg.LLM
 	systemPrompt := BuildSystemPrompt(cfg.SystemPrompt, devices, scenes)
-	return h.postLLM(llmRequest{
-		Model: cfg.Model,
+	return h.postLLMWithFallback(llmRequest{
 		Messages: []map[string]any{
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": text},
@@ -83,6 +112,7 @@ func (h *OrchestrateHandler) callLLMWithTools(text string, devices []DeviceConte
 
 // callLLMSecondRound 二次调用 LLM，将 tool result 喂回，获取最终文本回复。
 // pending 必须如实回放首轮 tool call 的 name/arguments，否则 history 与执行结果不自洽。
+// 自动按 providers 顺序尝试主备切换。
 func (h *OrchestrateHandler) callLLMSecondRound(toolResult, toolID string, pending pendingToolCall, devices []DeviceContext, scenes []SceneContext) (string, error) {
 	cfg := &h.cfg.LLM
 	systemPrompt := BuildSystemPrompt(cfg.SystemPrompt, devices, scenes)
@@ -124,8 +154,7 @@ func (h *OrchestrateHandler) callLLMSecondRound(toolResult, toolID string, pendi
 		},
 	}
 
-	resp, err := h.postLLM(llmRequest{
-		Model:    cfg.Model,
+	resp, err := h.postLLMWithFallback(llmRequest{
 		Messages: messages,
 	})
 	if err != nil {

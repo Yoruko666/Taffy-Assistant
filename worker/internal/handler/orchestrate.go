@@ -185,7 +185,7 @@ func (h *OrchestrateHandler) handleUpstreamControl(s *Session, data []byte) bool
 		// 把文本回显成 asr_final 给客户端，统一 UI 渲染逻辑。
 		_ = s.WriteJSON(map[string]any{"type": "asr_final", "text": text})
 
-		if h.cfg != nil && h.cfg.LLM.URL != "" {
+		if h.cfg != nil && len(h.cfg.LLM.Providers) > 0 {
 			devices, scenes := s.SnapshotDeviceContext()
 			go h.handleLLMWithTools(s, text, devices, scenes)
 		} else {
@@ -228,7 +228,7 @@ func (h *OrchestrateHandler) pumpASRToUpstream(s *Session, asrConn *websocket.Co
 		}
 
 		// asr_final → 异步调用大模型（带 Tool Calling）
-		if h.cfg != nil && h.cfg.LLM.URL != "" {
+		if h.cfg != nil && len(h.cfg.LLM.Providers) > 0 {
 			h.maybeTriggerLLM(s, out)
 		}
 	}

@@ -12,7 +12,7 @@ func HealthWithConfig(w http.ResponseWriter, r *http.Request, cfg *AppConfig) {
 	asrStatus := "unknown"
 	ttsStatus := "disabled"
 	if cfg != nil {
-		if cfg.LLM.URL != "" {
+		if len(cfg.LLM.Providers) > 0 {
 			llmStatus = "configured"
 		}
 		if cfg.ASR.WSURL != "" {
