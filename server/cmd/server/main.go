@@ -196,8 +196,8 @@ func buildRouter(cfg *config.AppConfig, d *deps) http.Handler {
 
 	if d.db != nil {
 		mux.HandleFunc("/api/v1/devices", d.jwtMW.RequireAuth(deviceHandler.ListDevices))
-		mux.HandleFunc("/api/v1/devices/states", d.jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
-		mux.HandleFunc("/api/v1/devices/state", methodOnly(http.MethodPut, d.jwtMW.RequireAuth(deviceHandler.UpdateDeviceState)))
+		mux.HandleFunc("GET /api/v1/devices/states", d.jwtMW.RequireAuth(deviceHandler.ListDeviceStates))
+		mux.HandleFunc("PUT /api/v1/devices/state", d.jwtMW.RequireAuth(deviceHandler.UpdateDeviceState))
 		mux.HandleFunc("/api/v1/devices/{deviceID}/state", d.jwtMW.RequireAuth(deviceHandler.GetDeviceState))
 
 		// UC-03 设备绑定 / 解绑 / 重命名

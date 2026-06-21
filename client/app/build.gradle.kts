@@ -15,7 +15,7 @@ android {
         versionName = "1.0.0"
 
         // 服务端地址（默认 Android 模拟器映射 10.0.2.2 → 宿主机 localhost）
-        buildConfigField("String", "SERVER_HOST", "\"10.0.2.2\"")
+        buildConfigField("String", "SERVER_HOST", "\"192.168.1.115\"")
         buildConfigField("int", "SERVER_PORT", "8080")
     }
 
@@ -59,6 +59,7 @@ dependencies {
     // Activity + Lifecycle
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 
     // Navigation Compose（页面切换：登录页 → 设备列表）

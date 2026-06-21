@@ -12,13 +12,14 @@ type ASRConfig struct {
 	WSURL string `yaml:"ws_url"`
 }
 
-// LLMConfig 大模型 API 配置（兼容 OpenAI Chat Completions 格式）。
+// LLMConfig 大模型 API 配置（通过本地 llm_server 代理 CodeBuddy SDK）。
 type LLMConfig struct {
-	URL          string `yaml:"url"`
-	APIKey       string `yaml:"api_key"`
-	Model        string `yaml:"model"`
-	SystemPrompt string `yaml:"system_prompt"`
-	Timeout      int    `yaml:"timeout"` // 秒
+	URL                 string `yaml:"url"`
+	APIKey              string `yaml:"api_key"`
+	Model               string `yaml:"model"`
+	InternetEnvironment string `yaml:"internet_environment"`
+	SystemPrompt        string `yaml:"system_prompt"`
+	Timeout             int    `yaml:"timeout"` // 秒
 }
 
 // TTSConfig TTS 模型 HTTP 接入配置。

@@ -5,8 +5,8 @@ USE taffy;
 
 -- 密码均为 "password123" 的 bcrypt 哈希（cost=10）
 INSERT INTO users (user_id, phone, email, password_hash, nickname) VALUES
-(1, '13800000001', 'alice@example.com', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJYd0QI4aKe', '小菲用户A'),
-(2, '13800000002', 'bob@example.com',  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJYd0QI4aKe', '小菲用户B');
+(1, '13800000001', 'alice@example.com', '$2a$10$Fusz3BxVqfOiE70MUM8AEuVIWzkCNsWuFo2TqFrQ4HpCjj9cnhGgu', '小菲用户A'),
+(2, '13800000002', 'bob@example.com',  '$2a$10$Fusz3BxVqfOiE70MUM8AEuVIWzkCNsWuFo2TqFrQ4HpCjj9cnhGgu', '小菲用户B');
 
 -- 设备：每个用户各几个家具
 --
