@@ -42,8 +42,7 @@ func main() {
 	}
 	slog.Info("config ready",
 		"asr_ws", cfg.ASR.WSURL,
-		"llm_url", cfg.LLM.URL,
-		"llm_model", cfg.LLM.Model,
+		"llm_providers", len(cfg.LLM.Providers),
 		"tts_url", cfg.TTS.URL,
 	)
 

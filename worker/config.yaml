@@ -6,10 +6,21 @@ asr:
   ws_url: "ws://127.0.0.1:9100/v1/asr/stream"
 
 # 大模型 API 配置（云端 LLM，OpenAI 兼容接口）
+# 支持多 provider 主备切换，按顺序优先使用第一个可用的 provider
 llm:
   url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
   api_key: "sk-c18ba6b727f74efcad676a11282f2635" 
   model: "qwen3.5-flash"                 
+  providers:
+    # 优先：DeepSeek API
+    - url: "https://api.deepseek.com/v1/chat/completions"
+      api_key: "sk-d20f6628273a4472926b215c4cc18086"
+      model: "deepseek-chat"
+    # 备用：阿里百炼（兼容 OpenAI 格式）
+    - url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+      api_key: "sk-your-api-key-here"
+      model: "qwen-turbo"
+  # System Prompt 基础部分（Worker 会自动追加用户设备列表和控制规则）
   system_prompt: "你是「小菲」，一个智能家居语音助手。请用中文简短回答用户的问题。"
   timeout: 30
 
