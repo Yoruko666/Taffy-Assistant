@@ -8,12 +8,12 @@
 
 本项目为一套面向全屋智能场景的语音交互系统，由 **家具端、客户端、服务器、Worker、模型服务** 五部分组成。家具助手名为 **小菲**——一台带麦克风与扬声器的智能家居设备。用户可通过 Android 客户端以文本方式、或对着"小菲"以语音方式与大模型交互，系统将自然语言指令解析为家居设备控制命令，由服务器分发执行并反馈状态。
 
-端云分工（端侧 KWS+VAD，云端 ASR/LLM/TTS）：
+端云分工（端侧 KWS+VAD，本地 ASR/TTS + OpenAI-compatible LLM provider）：
 
 - **家具端（小菲） = 本地硬件**：跑在音箱 / PC 模拟器上，负责 **录音 → KWS 唤醒词 → VAD 端点检测 → WS 上行 → 播放 TTS**。**断句在端侧做**，不靠云端。
 - **Go Server = 中枢 / 信息接收与转发 + 设备控制执行**：接受家具端 / 客户端的接入，做 JWT 鉴权、用户/设备 CRUD、对话历史落库（MySQL + Redis）、MQTT 设备控制；**不直接对接 AI**，把语音 WS 整段转发给 Worker；同时拦截 Worker 的 `device_command` 事件，执行设备控制（更新 DB + 转发控制指令），将结果回传 Worker 供 LLM 生成最终回复。
-- **Go Worker = 大模型编排 + Tool Call**：独占 ASR / LLM / TTS 调度，并支持 **OpenAI Function Calling**。一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 由 Server 原样转发到 Worker，Worker 转 ASR、`asr_final` 触发 LLM；当 LLM 返回 `tool_calls`（如 `control_device`）时，Worker 通过 WS 下发 `device_command` 给 Server 执行，收到执行结果后二次调用 LLM 生成自然语言回复，最终回传 `llm_result`。
-- **模型服务**：仅提供本地 ASR（FunASR paraformer-zh-streaming）和 TTS（Piper）推理能力，由 Worker 按需调用。
+- **Go Worker = 正式的大模型编排 + Tool Call 路径**：独占 ASR / LLM / TTS 调度，并支持 **OpenAI Function Calling**。一条 WS 长连接里承载 N 轮对话；家具端每个 `start / [PCM...] / end` 由 Server 原样转发到 Worker，Worker 转 ASR、`asr_final` 触发 LLM；Worker **直接调用配置的 OpenAI-compatible provider**，不经过 `model/llm_server`。当 LLM 返回 `tool_calls`（如 `control_device`）时，Worker 通过 WS 下发 `device_command` 给 Server 执行，收到执行结果后二次调用 LLM 生成自然语言回复，最终回传 `llm_result`。
+- **模型服务**：提供本地 ASR（FunASR paraformer-zh-streaming）和 TTS（Piper）推理能力，由 Worker 按需调用。`model/llm_server` 是独立的 CodeBuddy 实验/备用适配器，**不属于正式默认链路，也不会被仓库级一键启动脚本启动**。
 
 ```
                 ┌──────────────────────────────┐        ┌─────────────────────────────────┐

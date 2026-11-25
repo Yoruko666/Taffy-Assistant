@@ -1,4 +1,8 @@
 # Taffy Server 配置
+# 默认按 development 启动；生产部署请设置 TAFFY_ENV=production 并提供
+# 至少 32 个字符的随机 JWT_SECRET（或在 jwt.secret 中配置）。
+environment: development
+
 # Server 是系统中枢：负责接收家具端 / 客户端的请求，转发给 Worker（大模型编排），
 # 自身不直接接 ASR / LLM / TTS。
 #
@@ -10,11 +14,12 @@ worker:
   ws_url: "ws://127.0.0.1:8090/v1/orchestrate"
 
 # MySQL 数据库
+# 本地开发请通过 MYSQL_USER / MYSQL_PASSWORD 显式提供凭据，不要把凭据写入仓库。
 mysql:
   host: "127.0.0.1"
   port: 3306
-  user: "root"
-  password: "root"
+  user: "taffy"
+  password: ""
   dbname: "taffy"
   # 连接池参数
   max_open_conns: 20
@@ -29,7 +34,9 @@ redis:
 
 # JWT 鉴权
 jwt:
-  secret: "change-me-in-production"
+  # Development-only fallback is supplied by config.go; production requires
+  # JWT_SECRET or a strong value here (at least 32 characters).
+  secret: ""
   access_ttl: "2h"   # Access Token 有效期
   refresh_ttl: "168h" # Refresh Token 有效期（7 天）
 

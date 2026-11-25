@@ -1,72 +1,87 @@
 package handler
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
 func TestPostLLMWithFallback(t *testing.T) {
-	// 从 config.yaml 加载配置
-	cfg, err := LoadConfig("../../config.yaml")
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
+	var requests int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPost {
+			t.Errorf("request method = %s, want POST", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"primary unavailable"}}`))
+	}))
+	defer primary.Close()
 
-	if len(cfg.LLM.Providers) == 0 {
-		t.Fatal("no llm providers configured")
-	}
-	t.Logf("providers count: %d", len(cfg.LLM.Providers))
-	for i, p := range cfg.LLM.Providers {
-		t.Logf("  [%d] model=%s url=%s", i, p.Model, p.URL)
-	}
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"mock-response","choices":[{"message":{"role":"assistant","content":"mock reply"}}]}`))
+	}))
+	defer fallback.Close()
 
-	h := &OrchestrateHandler{cfg: cfg}
-
-	// 简单对话测试
-	resp, err := h.postLLMWithFallback(llmRequest{
-		Messages: []map[string]any{
-			{"role": "user", "content": "你好，请用一句话介绍你自己"},
+	h := &OrchestrateHandler{cfg: &AppConfig{LLM: LLMConfig{
+		Providers: []LLMProvider{
+			{URL: primary.URL, Model: "primary-model"},
+			{URL: fallback.URL, Model: "fallback-model"},
 		},
+		Timeout: 1,
+	}}}
+
+	resp, err := h.postLLMWithFallback(llmRequest{
+		Messages: []map[string]any{{"role": "user", "content": "hello"}},
 	})
 	if err != nil {
-		t.Fatalf("llm call failed: %v", err)
+		t.Fatalf("mock LLM call failed: %v", err)
 	}
-
-	if len(resp.Choices) == 0 {
-		t.Fatal("llm response has no choices")
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "mock reply" {
+		t.Fatalf("unexpected response: %+v", resp)
 	}
-	content := resp.Choices[0].Message.Content
-	t.Logf("LLM response: %s", content)
-
-	if content == "" {
-		t.Error("llm returned empty content")
+	if requests != 2 {
+		t.Fatalf("mock request count = %d, want 2", requests)
 	}
 }
 
 func TestPostLLMWithTools(t *testing.T) {
-	cfg, err := LoadConfig("../../config.yaml")
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if len(cfg.LLM.Providers) == 0 {
-		t.Fatal("no llm providers configured")
-	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model    string           `json:"model"`
+			Messages []map[string]any `json:"messages"`
+			Tools    []map[string]any `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body.Model != "mock-model" {
+			t.Errorf("model = %q, want mock-model", body.Model)
+		}
+		if len(body.Messages) != 2 {
+			t.Errorf("message count = %d, want 2", len(body.Messages))
+		}
+		if len(body.Tools) != 1 {
+			t.Errorf("tool count = %d, want 1", len(body.Tools))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"control_device","arguments":"{}"}}]}}]}`))
+	}))
+	defer server.Close()
 
-	h := &OrchestrateHandler{cfg: cfg}
+	h := &OrchestrateHandler{cfg: &AppConfig{LLM: LLMConfig{
+		Providers: []LLMProvider{{URL: server.URL, Model: "mock-model"}},
+		Timeout:   1,
+	}}}
 
-	// 测试带 tools 的调用
 	resp, err := h.callLLMWithTools("打开客厅的灯", nil, nil)
 	if err != nil {
-		t.Fatalf("llm with tools failed: %v", err)
+		t.Fatalf("mock LLM with tools failed: %v", err)
 	}
-	if len(resp.Choices) == 0 {
-		t.Fatal("llm response has no choices")
-	}
-	msg := resp.Choices[0].Message
-	t.Logf("LLM content: %s", msg.Content)
-	if len(msg.ToolCalls) > 0 {
-		t.Logf("Tool calls: %d", len(msg.ToolCalls))
-		for _, tc := range msg.ToolCalls {
-			t.Logf("  tool: %s args: %s", tc.Function.Name, tc.Function.Arguments)
-		}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("unexpected tool response: %+v", resp)
 	}
 }

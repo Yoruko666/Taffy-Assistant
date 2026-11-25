@@ -49,7 +49,11 @@ func main() {
 		slog.Warn("config load failed, falling back to env-only defaults", "path", configPath, "err", err)
 		cfg = config.DefaultConfig()
 	}
-	slog.Info("config ready", "worker_ws", cfg.Worker.WSURL, "mqtt_broker", cfg.MQTT.Broker)
+	if err := cfg.ValidateStartup(); err != nil {
+		slog.Error("configuration rejected", "environment", cfg.Environment, "err", err)
+		os.Exit(1)
+	}
+	slog.Info("config ready", "environment", cfg.Environment, "worker_ws", cfg.Worker.WSURL, "mqtt_broker", cfg.MQTT.Broker)
 
 	d := buildDeps(cfg)
 	defer d.Close()

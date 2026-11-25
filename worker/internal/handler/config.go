@@ -21,6 +21,10 @@ type LLMProvider struct {
 
 // LLMConfig 大模型 API 配置（通过本地 llm_server 代理 CodeBuddy SDK）。
 type LLMConfig struct {
+	// Providers are tried in order; the first provider is the primary one.
+	Providers           []LLMProvider `yaml:"providers"`
+	// Deprecated legacy fields are retained for compatibility with older YAML.
+	// New configuration should use Providers instead.
 	URL                 string `yaml:"url"`
 	APIKey              string `yaml:"api_key"`
 	Model               string `yaml:"model"`
@@ -56,21 +60,22 @@ func (c *AppConfig) setDefaults() {
 		c.LLM.Timeout = 30
 	}
 
-	// 如果 YAML 中没有任何 provider，尝试从环境变量构造第 0 个
-	if len(c.LLM.Providers) == 0 {
-		envURL := os.Getenv("LLM_URL")
-		envKey := os.Getenv("LLM_API_KEY")
-		envModel := os.Getenv("LLM_MODEL")
-		if envURL != "" || envKey != "" || envModel != "" {
-			c.LLM.Providers = append(c.LLM.Providers, LLMProvider{
-				URL:    envURL,
-				APIKey: envKey,
-				Model:  envModel,
-			})
-		}
+	// 兼容旧版只有 llm.url/api_key/model 的配置；统一转换为第一个 provider。
+	if len(c.LLM.Providers) == 0 && (c.LLM.URL != "" || c.LLM.APIKey != "" || c.LLM.Model != "") {
+		c.LLM.Providers = append(c.LLM.Providers, LLMProvider{
+			URL:    c.LLM.URL,
+			APIKey: c.LLM.APIKey,
+			Model:  c.LLM.Model,
+		})
 	}
 
-	// 环境变量覆盖 providers[0] 的字段
+	// 环境变量始终覆盖 providers[0] 的对应字段；没有 YAML provider 时，
+	// 只要任一 LLM 环境变量存在就创建第一个 provider。
+	if len(c.LLM.Providers) == 0 {
+		if os.Getenv("LLM_URL") != "" || os.Getenv("LLM_API_KEY") != "" || os.Getenv("LLM_MODEL") != "" {
+			c.LLM.Providers = append(c.LLM.Providers, LLMProvider{})
+		}
+	}
 	if len(c.LLM.Providers) > 0 {
 		if v := os.Getenv("LLM_API_KEY"); v != "" {
 			c.LLM.Providers[0].APIKey = v

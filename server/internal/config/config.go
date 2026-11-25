@@ -2,8 +2,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -86,15 +88,25 @@ type MQTTConfig struct {
 
 // AppConfig Server 顶层配置。
 type AppConfig struct {
-	Worker WorkerConfig `yaml:"worker"`
-	MySQL  MySQLConfig  `yaml:"mysql"`
-	Redis  RedisConfig  `yaml:"redis"`
-	JWT    JWTConfig    `yaml:"jwt"`
-	MQTT   MQTTConfig   `yaml:"mqtt"`
+	// Environment controls startup security policy. It defaults to development
+	// so local development remains explicit and convenient.
+	Environment string       `yaml:"environment"`
+	Worker      WorkerConfig `yaml:"worker"`
+	MySQL       MySQLConfig  `yaml:"mysql"`
+	Redis       RedisConfig  `yaml:"redis"`
+	JWT         JWTConfig    `yaml:"jwt"`
+	MQTT        MQTTConfig   `yaml:"mqtt"`
 }
 
 // setDefaults 用合理默认值填充零值字段；环境变量优先级高于 YAML。
 func (c *AppConfig) setDefaults() {
+	if c.Environment == "" {
+		c.Environment = "development"
+	}
+	if v := os.Getenv("TAFFY_ENV"); v != "" {
+		c.Environment = v
+	}
+
 	if c.Worker.WSURL == "" {
 		c.Worker.WSURL = "ws://127.0.0.1:8090/v1/orchestrate"
 	}
@@ -131,8 +143,8 @@ func (c *AppConfig) setDefaults() {
 	if v := os.Getenv("REDIS_ADDR"); v != "" {
 		c.Redis.Addr = v
 	}
-	if c.JWT.Secret == "" {
-		c.JWT.Secret = "change-me-in-production"
+	if c.JWT.Secret == "" && !c.IsProduction() {
+		c.JWT.Secret = "development-only-jwt-secret"
 	}
 	if c.JWT.AccessTTL == "" {
 		c.JWT.AccessTTL = "2h"
@@ -159,6 +171,45 @@ func (c *AppConfig) setDefaults() {
 	}
 	if v := os.Getenv("MQTT_PASSWORD"); v != "" {
 		c.MQTT.Password = v
+	}
+}
+
+// IsProduction reports whether production startup safeguards apply.
+func (c *AppConfig) IsProduction() bool {
+	switch strings.ToLower(strings.TrimSpace(c.Environment)) {
+	case "production", "prod":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateStartup enforces configuration requirements that must be checked
+// before any server dependencies are initialized.
+func (c *AppConfig) ValidateStartup() error {
+	if !c.IsProduction() {
+		return nil
+	}
+
+	secret := strings.TrimSpace(c.JWT.Secret)
+	if secret == "" {
+		return errors.New("jwt secret is required in production (set jwt.secret or JWT_SECRET)")
+	}
+	if isWeakJWTSecret(secret) {
+		return errors.New("jwt secret is too weak for production (use a random secret of at least 32 characters)")
+	}
+	return nil
+}
+
+func isWeakJWTSecret(secret string) bool {
+	if len(secret) < 32 {
+		return true
+	}
+	switch strings.ToLower(secret) {
+	case "change-me-in-production", "change-me", "secret", "jwt-secret", "development-only-jwt-secret":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -2,7 +2,7 @@
 # 用法：在 model/ 目录下执行 .\start_all.ps1
 # 可通过环境变量覆盖：
 #   $env:ASR_PORT=9101; $env:TTS_PORT=9201; $env:LLM_PORT=9301
-#   $env:ASR_DEVICE='cpu'   # 默认 cuda，没 GPU 时改回 cpu
+#   $env:ASR_DEVICE='cuda'  # 默认 cpu；有 NVIDIA GPU 时可切换
 #   $env:CODEBUDDY_API_KEY, $env:CODEBUDDY_INTERNET_ENVIRONMENT, $env:CODEBUDDY_MODEL
 # 然后运行 .\start_all.ps1
 
